@@ -1,0 +1,31 @@
+# Secrets / credentials — never commit
+.env
+# Rendered launchd agent (contains absolute paths + emails); keep only the template
+*.plist
+!*.plist.template
+
+# Private algorithm (proprietary alpha / scoring / strategy)
+core/
+
+# Virtual environments
+.venv/
+.venv_new/
+.venv_trading/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+
+# Generated
+logs/
+reports/
+
+# State
+.alpaca_state.json
+
+# Claude — keep the multi-agent skill definitions, drop everything else
+.claude/*
+!.claude/skills/

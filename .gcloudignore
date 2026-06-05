@@ -1,0 +1,10 @@
+.venv/
+.venv_new/
+.venv_trading/
+.idea/
+__pycache__/
+*.pyc
+reports/
+logs/
+*.plist
+.git/
