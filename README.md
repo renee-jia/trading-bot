@@ -16,15 +16,14 @@
 ## 📈 Live Paper-Trading Performance
 
 > Real money-weighted Alpaca paper account, auto-generated from the broker API.
-> Account opened **2026-03-13**. Snapshot **2026-06-04**. _Past performance ≠ future results._
+> Account opened **2026-03-13**. _Past performance ≠ future results._
 
-| | Return (since inception) |
-|---|---:|
-| **🤖 This strategy (paper)** | **+53.6%** |
-| S&P 500 (SPY) | +13.5% |
-| Nasdaq-100 (QQQ) | +24.8% |
+| Snapshot | 🤖 Strategy (paper) | S&P 500 (SPY) | Nasdaq-100 (QQQ) | Equity |
+|---|---:|---:|---:|---:|
+| **2026-07-09** (latest) | **+39.8%** | +13.5% | +21.4% | $139,829 |
+| 2026-06-04 | +53.6% | +13.5% | +24.8% | $159,560 |
 
-Starting capital **$100,000** → peak equity **$159,560**, max drawdown **−8.4%**, 32 open positions concentrated in semis/AI (MRVL +33%, ARM +18%, SNDK +12%).
+Starting capital **$100,000** → peak equity **$165,578** (2026-06), current equity **$139,829**, max drawdown **−20.7%**, 35 open positions concentrated in semis/AI (top holdings: CRDO, DELL, MU, AMD). The pullback from the June peak reflects the July semiconductor selloff — a high-beta strategy amplifies both directions.
 
 📊 **Full breakdown + equity curve → [docs/PAPER_TRADING.md](docs/PAPER_TRADING.md)** (refresh anytime with `python scripts/fetch_paper_performance.py`)
 
