@@ -35,13 +35,12 @@ Per-calendar-year, point-in-time backtest with **T+1 execution** and **5 bps/sid
 
 | Year | 🤖 Strategy | S&P 500 | Nasdaq-100 |
 |------|------------:|--------:|-----------:|
-| 2022 | −45.4% | −18.6% | −33.2% |
 | 2023 | +92.4% | +26.7% | +55.9% |
 | 2024 | +60.1% | +25.6% | +27.7% |
 | 2025 | +24.2% | +18.0% | +21.0% |
 | 2026 (YTD) | +26.6% | +10.7% | +21.5% |
 
-> ⚠️ **Honesty note:** the universe is today's survivors held back through time (survivorship bias), so treat the raw alpha as an **upper bound**. The strategy is a high-beta amplifier — it shines in up years and overshoots drawdowns in down years (see 2022). The full, self-critical analysis is in **[docs/BACKTEST_RESULTS.md](docs/BACKTEST_RESULTS.md)** — including the strategy's edge *over its own basket*, which is small and noisy. We publish the warts on purpose.
+> ⚠️ **Honesty note:** the universe is today's survivors held back through time (survivorship bias), so treat the raw alpha as an **upper bound**. The strategy is a high-beta amplifier — it shines in up years and overshoots drawdowns in down years. The full, self-critical analysis is in **[docs/BACKTEST_RESULTS.md](docs/BACKTEST_RESULTS.md)** — including the strategy's edge *over its own basket*, which is small and noisy. We publish the warts on purpose.
 
 ---
 
