@@ -65,6 +65,13 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
     # Build Alpaca portfolio performance section
     alpaca_section = _build_alpaca_performance()
 
+    # Covered-call advisor for held shares (CC_POSITIONS env; empty when unset)
+    try:
+        import covered_call_advisor
+        cc_section = covered_call_advisor.build_covered_call_section()
+    except Exception as e:
+        cc_section = f"## Covered Call Advisor\n\n*Section failed: {e}*\n\n---\n"
+
     report = f"""# Stock Recommendations Report
 
 **Generated:** {now}
@@ -76,6 +83,8 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
 {macro_section}
 
 {alpaca_section}
+
+{cc_section}
 
 {market_overview}
 
