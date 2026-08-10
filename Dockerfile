@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY data_fetcher.py technical_analyzer.py sentiment_analyzer.py \
      trend_analyzer.py report_generator.py macro_analyzer.py main.py \
-     daily_report.py email_sender.py alpaca_trader.py stock_discovery.py ./
+     daily_report.py email_sender.py alpaca_trader.py stock_discovery.py \
+     covered_call_advisor.py sell_put_advisor.py ./
 
 # Private algorithm package (custom_alphas / scorer / strategy / configs).
 # Git-ignored, but present in the local build context, so it is baked into the
