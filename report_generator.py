@@ -72,6 +72,13 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
     except Exception as e:
         cc_section = f"## Covered Call Advisor\n\n*Section failed: {e}*\n\n---\n"
 
+    # Sell-put radar: scan the whole universe for panic-drop premium setups
+    try:
+        import sell_put_advisor
+        sp_section = sell_put_advisor.build_sell_put_section(ranked)
+    except Exception as e:
+        sp_section = f"## Sell Put 雷达\n\n*Section failed: {e}*\n\n---\n"
+
     report = f"""# Stock Recommendations Report
 
 **Generated:** {now}
@@ -80,11 +87,13 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
 
 ---
 
+{cc_section}
+
+{sp_section}
+
 {macro_section}
 
 {alpaca_section}
-
-{cc_section}
 
 {market_overview}
 

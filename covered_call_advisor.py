@@ -11,12 +11,15 @@ Strategy rules (calibrated 2026-08-03):
 - Never let a short call cross earnings: the expiry must end >= 2 days
   before the next confirmed earnings date. If every 25+ DTE expiry crosses
   earnings, advise waiting for the post-earnings IV crush instead.
-- Offer a strike ladder around 0.20 / 0.25 / 0.30 delta with mid-price
-  limit quotes.
+- Offer a regime-adaptive strike ladder with mid-price limit quotes:
+  trending 0.15/0.20/0.25 delta, neutral 0.20/0.25/0.30, basing
+  0.25/0.30/0.35.
 - Coverage ratio scales with momentum regime: stocks near 52-week highs
   get LESS coverage (empirical breach rates run far above risk-neutral
   P(ITM) on trending names), basing stocks get MORE.
-- Exit/roll guidance: buy back at 50-65% of premium or at 21 DTE.
+- Warn when IV runs below trimmed realized vol (thin premium).
+- Exit/roll guidance: GTC buyback at 50% of fill, else forced roll at
+  21 DTE.
 """
 import os
 from datetime import datetime, timedelta
@@ -29,8 +32,8 @@ import yfinance as yf
 TARGET_DTE = 45
 DTE_MIN, DTE_MAX = 25, 60
 EARNINGS_BUFFER_DAYS = 2
-TARGET_DELTAS = (0.30, 0.25, 0.20)
 RISK_FREE = 0.037  # refreshed from ^IRX when available
+VRP_THIN_PT = -1.0  # IV below realized vol by >1pt = thin premium, warn
 
 
 def _norm_cdf(x):
@@ -124,7 +127,14 @@ def _pick_expiry(expirations, earnings, today=None):
 
 
 def _momentum_regime(closes):
-    """Classify drift risk -> coverage guidance."""
+    """
+    Classify drift risk -> (label, coverage lo/hi, delta ladder).
+
+    The delta ladder shifts with regime, not just the coverage ratio:
+    trending names breach far above risk-neutral P(ITM) (~1.5-1.7x
+    empirically), so sell further OTM; basing names rarely breach, so
+    harvest closer to the money.
+    """
     spot = closes.iloc[-1]
     dist_high = spot / closes.tail(252).max() - 1
     ret_3m = spot / closes.iloc[-64] - 1 if len(closes) > 64 else 0.0
@@ -132,10 +142,10 @@ def _momentum_regime(closes):
     # breach rates near highs run far above risk-neutral P(ITM) even when a
     # recent drawdown has dragged the 3m return negative (V-recovery case).
     if dist_high > -0.08 or (dist_high > -0.12 and ret_3m > 0.05):
-        return "趋势强（接近52周高点）", 0.4, 0.6
+        return "趋势强（接近52周高点）", 0.4, 0.6, (0.25, 0.20, 0.15)
     if dist_high < -0.18:
-        return "回撤磨底（距高点>18%）", 0.8, 1.0
-    return "中性震荡", 0.6, 0.8
+        return "回撤磨底（距高点>18%）", 0.8, 1.0, (0.35, 0.30, 0.25)
+    return "中性震荡", 0.6, 0.8, (0.30, 0.25, 0.20)
 
 
 def analyze_ticker(ticker, shares, rate):
@@ -153,7 +163,7 @@ def analyze_ticker(ticker, shares, rate):
     earnings = _next_earnings(t)
     expiry, dte, status = _pick_expiry(t.options, earnings)
 
-    regime, cov_lo, cov_hi = _momentum_regime(closes)
+    regime, cov_lo, cov_hi, ladder_deltas = _momentum_regime(closes)
     contracts = shares // 100
 
     result = {
@@ -172,6 +182,7 @@ def analyze_ticker(ticker, shares, rate):
         "cover_hi": max(1, round(contracts * cov_hi)) if contracts else 0,
         "ladder": [],
         "atm_iv": None,
+        "exp_move": None,
     }
     if status == "wait" or expiry is None:
         return result
@@ -192,6 +203,7 @@ def analyze_ticker(ticker, shares, rate):
     result["atm_iv"] = float(chain.calls.loc[atm_idx, "impliedVolatility"])
 
     t_years = dte / 365
+    result["exp_move"] = spot * result["atm_iv"] * sqrt(t_years)
     # yfinance per-strike IVs are occasionally stale garbage; clamp to a
     # plausible band and fall back to ATM IV outside it.
     calls["delta"] = [
@@ -201,7 +213,7 @@ def analyze_ticker(ticker, shares, rate):
     ]
 
     used = set()
-    for target in TARGET_DELTAS:
+    for target in ladder_deltas:
         row = calls.iloc[(calls.delta - target).abs().argsort()].iloc[0]
         if row.strike in used:
             continue
@@ -240,15 +252,27 @@ def _format_ticker_section(r):
                      "等财报后 IV crush 落地 3-5 天再开新仓。\n")
         return "\n".join(lines)
 
+    if vrp is not None and vrp < VRP_THIN_PT:
+        lines.append(f"> ⚠️ **权利金偏薄**：IV 低于真实波动率 {abs(vrp):.0f}pt，卖方期望值不佳。"
+                     "本期建议只覆盖下限张数，或跳过等 IV 回升。\n")
+
     dte_note = "（标准 45 天窗口）" if r["status"] == "ok" else "（财报临近，被迫缩短周期）"
     exp_date = datetime.strptime(r["expiry"], "%Y-%m-%d").date()
     roll_date = exp_date - timedelta(days=21)
     cover = (f"{r['cover_lo']} 张" if r["cover_lo"] == r["cover_hi"]
              else f"{r['cover_lo']}-{r['cover_hi']} 张")
+    em_note = ""
+    if r.get("exp_move"):
+        em = r["exp_move"]
+        em_note = (f" | 到期日 ±1σ 区间 **${r['spot']-em:.0f} – ${r['spot']+em:.0f}**"
+                   f"（{em/r['spot']*100:.1f}%）")
     lines.append(
         f"**推荐到期日：{r['expiry']}（{r['dte']} DTE）**{dte_note} | "
-        f"动量状态：{r['regime']} → 建议覆盖 **{cover}**\n"
+        f"动量状态：{r['regime']} → 建议覆盖 **{cover}**{em_note}\n"
     )
+    if "趋势强" in r["regime"]:
+        lines.append("> 注：趋势股的实际涨穿率约为 delta 的 1.5-1.7 倍（经验校准）——"
+                     "表中 0.20 delta 实际被行权概率按 ~30-35% 估计，阶梯已整体下移至 0.15-0.25 delta。\n")
     lines.append("| 行权价 | OTM | Delta | Bid/Ask | **挂单价(mid)** | 权利金/张 | 收益率 | 年化 | OI |")
     lines.append("|---|---|---|---|---|---|---|---|---|")
     for l in r["ladder"]:
@@ -258,8 +282,13 @@ def _format_ticker_section(r):
             f"| {l['prem_pct']:.2f}% | {l['ann_pct']:.1f}% | {l['oi']:,} |"
         )
     lines.append("")
-    lines.append(f"> 管理：利润达 50-65% 或 **{roll_date}**（剩21天）先到者平仓滚动；"
-                 f"涨穿行权价则向上+向外滚动，不要放到期。\n")
+    if r["dte"] <= 24:
+        lines.append("> 管理：本期周期短——成交后立即挂 GTC 买回单（限价 = 成交价 × 50%），"
+                     "达标即离场，不设 21 DTE 滚动点；涨穿行权价则向上+向外滚动。\n")
+    else:
+        lines.append(f"> 管理：成交后立即挂 GTC 买回单（限价 = 成交价 × 50%）；"
+                     f"未触发则 **{roll_date}**（剩21天）强制平仓滚动；"
+                     f"涨穿行权价则向上+向外滚动，不要放到期。\n")
     return "\n".join(lines)
 
 
@@ -273,8 +302,8 @@ def build_covered_call_section(positions=None):
     rate = _risk_free_rate()
     parts = [
         "## Covered Call Advisor（持仓期权收租建议）\n",
-        "*规则：45 DTE 开仓 / 21 DTE 或 50-65% 利润滚动 / 到期日必须在财报前 / "
-        "趋势强则少覆盖、磨底则多覆盖。挂单用 mid 限价。*\n",
+        "*规则：45 DTE 开仓 / GTC 50% 止盈或 21 DTE 滚动 / 到期日必须在财报前 / "
+        "趋势强则少覆盖+更远行权价（0.15-0.25Δ），磨底则多覆盖+更近（0.25-0.35Δ）。挂单用 mid 限价。*\n",
     ]
     for ticker, shares in positions.items():
         try:
