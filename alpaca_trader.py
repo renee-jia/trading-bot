@@ -4,8 +4,12 @@ Alpaca paper/live trading module.
 Executes the concentrated top-10 momentum strategy:
 - Scores all stocks, selects top 10 by score
 - Weights: 95% momentum rank + 5% score^2
+- Rank buffer: held names keep their slot until they fall out of the top 15
+  by momentum; new names only enter at top 10 (cuts boundary churn)
 - Macro-based cash reserve (0-20% — ~80%+ always invested)
-- Gradual rebalancing (80% blend toward target)
+- Gradual rebalancing (80% blend toward target); zero-target positions are
+  exited in full so whole-share rounding can't strand remnants
+- Min trade size 0.3% of equity (floor $50)
 - Examines the account and rebalances every run
 
 Usage:
@@ -113,13 +117,17 @@ def get_alpaca_client(paper=True):
     return TradingClient(api_key, api_secret, paper=paper)
 
 
-def compute_target_weights(scored_results, macro_result=None):
+def compute_target_weights(scored_results, macro_result=None, held=None):
     """
     Compute target portfolio weights using the concentrated top-10 strategy.
 
     Delegates to strategy.compute_target_weights — the single source of truth
     shared with report_generator and backtest_strategy, so the live, reported
     and backtested portfolios cannot drift apart.
+
+    held: set of currently-held tickers (real positions, not remnants) —
+    enables the rank buffer so names oscillating around the top-10 boundary
+    don't get churned.
 
     Returns:
         (weights, cash_pct): weights is {ticker: weight_pct}, cash_pct 0.0-0.20.
@@ -142,7 +150,8 @@ def compute_target_weights(scored_results, macro_result=None):
             "mom": strategy.momentum_composite(m1, m3),
         })
 
-    return strategy.compute_target_weights(stocks, macro_score=macro_score)
+    return strategy.compute_target_weights(stocks, macro_score=macro_score,
+                                           held=held)
 
 
 def get_current_positions(client):
@@ -188,12 +197,18 @@ def calculate_trades(target_weights, current_positions, account_value,
     # All tickers (union of current positions and targets)
     all_tickers = set(list(target_weights.keys()) + list(current_positions.keys()))
 
-    # Blend toward target (gradual rebalancing)
+    # Blend toward target (gradual rebalancing). Names with a ZERO target are
+    # exited outright (blended weight 0, full-qty sell below) — blending an
+    # exit leaves a tail that whole-share rounding can never sell off, which is
+    # how the book once accumulated dozens of stuck 1-share remnants.
     blended_weights = {}
     for ticker in all_tickers:
         current_w = current_weights.get(ticker, 0)
         target_w = target_weights.get(ticker, 0)
-        blended_weights[ticker] = current_w + blend_speed * (target_w - current_w)
+        if target_w <= 0:
+            blended_weights[ticker] = 0.0
+        else:
+            blended_weights[ticker] = current_w + blend_speed * (target_w - current_w)
 
     # Normalize blended weights
     total_blended = sum(max(0, w) for w in blended_weights.values())
@@ -201,14 +216,34 @@ def calculate_trades(target_weights, current_positions, account_value,
         scale = (1 - cash_pct) * 100 / total_blended
         blended_weights = {t: max(0, w * scale) for t, w in blended_weights.items()}
 
+    # Minimum trade size: 0.3% of equity (floor $50). The old flat $50 threshold
+    # let daily rank shuffles generate hundreds of tiny rebalance orders.
+    min_trade = max(50.0, account_value * 0.003)
+
     trades = []
     for ticker in all_tickers:
         target_value = account_value * blended_weights.get(ticker, 0) / 100
         current_value = current_positions.get(ticker, {}).get("market_value", 0)
+        held_qty = int(float(current_positions.get(ticker, {}).get("qty", 0)))
         diff = target_value - current_value
 
-        # Skip tiny trades (< $50 or < 1% of position)
-        if abs(diff) < 50:
+        # Full exit: dropped from the portfolio → sell every share we hold,
+        # bypassing the min-trade and rounding paths so no remnant survives.
+        if target_value <= 0 and held_qty > 0:
+            trades.append({
+                "ticker": ticker,
+                "side": "sell",
+                "qty": held_qty,
+                "dollar_amount": current_value,
+                "current_weight": current_weights.get(ticker, 0),
+                "target_weight": 0.0,
+                "blended_weight": 0.0,
+                "reason": "Exit (dropped from portfolio)",
+            })
+            continue
+
+        # Skip tiny trades (< min_trade or < 1% of position)
+        if abs(diff) < min_trade:
             continue
         if current_value > 0 and abs(diff) / current_value < 0.01:
             continue
@@ -232,7 +267,6 @@ def calculate_trades(target_weights, current_positions, account_value,
         else:
             side = "sell"
             # Never sell more than we actually hold (avoids rejected/short orders).
-            held_qty = int(float(current_positions.get(ticker, {}).get("qty", 0)))
             qty = min(qty, held_qty)
             if qty == 0:
                 continue
@@ -364,10 +398,18 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
                 "open_orders": len(open_orders)}
 
     # Examine account every run — no interval gate. The min-trade thresholds
-    # in calculate_trades ($50 / 1%) prevent churn once we're aligned.
+    # in calculate_trades prevent churn once we're aligned.
+
+    # Get current positions first: the rank buffer needs to know what we hold.
+    # Remnants (< 1% of equity) don't count as held — a stuck leftover must not
+    # reserve a portfolio slot.
+    current_positions = get_current_positions(client)
+    held = {t for t, pos in current_positions.items()
+            if pos["market_value"] >= account_value * 0.01}
 
     # Compute target weights
-    target_weights, cash_pct = compute_target_weights(scored_results, macro_result)
+    target_weights, cash_pct = compute_target_weights(scored_results, macro_result,
+                                                      held=held)
     if not target_weights:
         print("No target weights computed. Skipping.")
         return {"status": "error", "reason": "no target weights"}
@@ -378,9 +420,6 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
     for ticker in sorted(target_weights, key=lambda x: target_weights[x], reverse=True):
         if target_weights[ticker] > 0.1:
             print(f"  {ticker:<8} {target_weights[ticker]:>5.1f}%")
-
-    # Get current positions
-    current_positions = get_current_positions(client)
     if current_positions:
         print(f"\nCurrent Positions ({len(current_positions)}):")
         for ticker in sorted(current_positions, key=lambda x: current_positions[x]["market_value"], reverse=True):
