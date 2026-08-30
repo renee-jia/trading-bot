@@ -2,7 +2,7 @@
 Alpaca paper/live trading module.
 
 Executes the concentrated top-10 momentum strategy:
-- Scores all stocks, selects top 10 by score
+- Scores all stocks, then selects top 10 by *momentum* (not by score)
 - Weights: 95% momentum rank + 5% score^2
 - Rank buffer: held names keep their slot until they fall out of the top 15
   by momentum; new names only enter at top 10 (cuts boundary churn)
@@ -10,6 +10,7 @@ Executes the concentrated top-10 momentum strategy:
 - Gradual rebalancing (80% blend toward target); zero-target positions are
   exited in full so whole-share rounding can't strand remnants
 - Min trade size 0.3% of equity (floor $50)
+- Buys are capped to cash minus the macro reserve — never funded with margin
 - Examines the account and rebalances every run
 
 Usage:
@@ -289,6 +290,37 @@ def calculate_trades(target_weights, current_positions, account_value,
     return trades
 
 
+def buy_budget(cash, buying_power, equity, cash_pct):
+    """Dollars available for new buys this run.
+
+    Never spend margin and never dip into the macro cash reserve. Negative
+    cash (the 2026-07 paper book) yields 0 — sells-only until cash is rebuilt.
+    """
+    cash = float(cash or 0)
+    buying_power = max(0.0, float(buying_power or 0))
+    equity = max(0.0, float(equity or 0))
+    cash_pct = min(max(float(cash_pct or 0), 0.0), 1.0)
+    from_cash = cash - equity * cash_pct
+    return max(0.0, min(buying_power, from_cash))
+
+
+def clip_buys_to_budget(trades, budget):
+    """Scale or drop buy legs so their notional fits `budget`. Sells unchanged."""
+    budget = max(0.0, float(budget or 0))
+    buys = [t for t in trades if t["side"] == "buy"]
+    total_buy = sum(t["dollar_amount"] for t in buys)
+    if not buys or total_buy <= budget:
+        return trades, False
+    if budget <= 0:
+        return [t for t in trades if t["side"] != "buy"], True
+    scale = (budget / total_buy) * 0.99
+    for t in buys:
+        price = t["dollar_amount"] / t["qty"] if t["qty"] else 0
+        t["qty"] = int(t["qty"] * scale)
+        t["dollar_amount"] = t["qty"] * price
+    return [t for t in trades if t["qty"] > 0], True
+
+
 def execute_trades(client, trades, dry_run=False):
     """
     Execute trades via Alpaca.
@@ -380,7 +412,9 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
     account = client.get_account()
     account_value = float(account.equity)
     buying_power = float(getattr(account, "buying_power", account_value) or account_value)
-    print(f"Account Equity: ${account_value:,.2f}  |  Buying Power: ${buying_power:,.2f}")
+    cash = float(getattr(account, "cash", 0) or 0)
+    print(f"Account Equity: ${account_value:,.2f}  |  Cash: ${cash:,.2f}  |  "
+          f"Buying Power: ${buying_power:,.2f}")
 
     # Pending-order guard: never stack new orders on top of unfilled ones, or a
     # double run / unfilled market-on-open batch would double our exposure.
@@ -460,20 +494,22 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
         print("\nNo trades needed — portfolio is already aligned.")
         return {"status": "no_trades_needed"}
 
-    # Buying-power guard: sells settle asynchronously, so their proceeds are NOT
-    # available to fund same-batch buys. Scale buys down to fit available buying
-    # power and drop any that round to zero — prevents rejected/over-leveraged orders.
-    buys = [t for t in trades if t["side"] == "buy"]
-    total_buy = sum(t["dollar_amount"] for t in buys)
-    if buys and total_buy > buying_power:
-        scale = (buying_power / total_buy) * 0.99 if total_buy > 0 else 0
-        print(f"\nBuying power ${buying_power:,.0f} < buy demand ${total_buy:,.0f} — "
-              f"scaling buys to {scale*100:.0f}%.")
-        for t in buys:
-            price = t["dollar_amount"] / t["qty"] if t["qty"] else 0
-            t["qty"] = int(t["qty"] * scale)
-            t["dollar_amount"] = t["qty"] * price
-        trades = [t for t in trades if t["qty"] > 0]
+    # Cash guard: buying_power includes margin and can stay positive while
+    # cash is negative. Cap buys to cash minus the macro reserve so a run
+    # never leverages the book. Same-batch sell proceeds are not counted.
+    budget = buy_budget(cash, buying_power, account_value, cash_pct)
+    buy_demand = sum(t["dollar_amount"] for t in trades if t["side"] == "buy")
+    trades, clipped = clip_buys_to_budget(trades, budget)
+    if clipped:
+        if budget <= 0:
+            print(f"\nCash ${cash:,.0f} at/below {cash_pct*100:.0f}% reserve — "
+                  f"skipping ${buy_demand:,.0f} of buys this run (sells still go).")
+        else:
+            print(f"\nBuy budget ${budget:,.0f} (cash minus reserve) < demand "
+                  f"${buy_demand:,.0f} — scaled buys to fit.")
+    if not trades:
+        print("\nNo trades left after cash guard.")
+        return {"status": "no_trades_needed", "reason": "buy_budget_zero"}
 
     # Hard notional cap for live runs: abort entirely (don't partially execute an
     # unexpectedly large rebalance) if total $ traded exceeds the configured cap.

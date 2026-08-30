@@ -9,13 +9,17 @@ if assigned.
 
 Trigger (any one):
 - 5-day return <= -7%
-- 1-day return <= -5%
+- 1-day return <= -5% (ignored when the 5-day return is still > +5% —
+  that is a one-day fade after a melt-up, not a panic dip)
 - 1-month return <= -12% with RSI < 35 (oversold grind-down)
 
-No personal position data involved, so unlike CC_POSITIONS this section is
-safe for the public harness and always runs.
+Names already held (CC_POSITIONS and, when keys exist, the Alpaca book) are
+excluded so a short put does not stack on an existing long. Expiries that
+land inside three calendar days after FOMC / CPI / NFP / PCE are skipped
+so the short is not pinned into the event.
 """
-from datetime import datetime, timedelta
+import os
+from datetime import date, datetime, timedelta
 from math import sqrt
 
 import numpy as np
@@ -28,20 +32,102 @@ from covered_call_advisor import (
     _next_earnings,
     _pick_expiry,
     _risk_free_rate,
+    get_positions,
 )
 
 DROP_5D = -7.0
 DROP_1D = -5.0
 DROP_1M = -12.0
 RSI_OVERSOLD = 35.0
+# A one-day crash after a strong 5-day rally is a fade, not a dip.
+RALLY_5D = 5.0
 TARGET_DELTAS = (0.30, 0.25, 0.20)  # absolute put deltas
 MAX_CANDIDATES = 5  # bound option-chain fetches on broad-selloff days
 
+# High-impact US prints. Update when the calendar rolls.
+# FOMC uses a 3-day pin buffer (Wed decision → Friday monthly is the trap).
+# CPI / NFP / PCE only block an expiry that lands on the print itself.
+HIGH_IMPACT_MACRO = (
+    (date(2026, 8, 26), "PCE"),
+    (date(2026, 9, 4), "NFP"),
+    (date(2026, 9, 11), "CPI"),
+    (date(2026, 9, 16), "FOMC"),
+    (date(2026, 9, 30), "PCE"),
+    (date(2026, 10, 14), "CPI"),
+    (date(2026, 10, 28), "FOMC"),
+    (date(2026, 11, 6), "NFP"),
+    (date(2026, 11, 12), "CPI"),
+    (date(2026, 12, 9), "CPI"),
+    (date(2026, 12, 16), "FOMC"),
+)
+FOMC_BUFFER_DAYS = 3
 
-def find_drop_candidates(ranked):
-    """Filter ranked stocks (report pipeline dicts) down to big droppers."""
+
+def expiry_hits_macro(exp_date, events=None, buffer_days=None):
+    """True if a high-impact print pins this expiry.
+
+    `events` is a list of dates (tests) or (date, label) pairs. FOMC keeps a
+    3-day buffer; other prints only block same-day expiry.
+    """
+    if events is None:
+        events = HIGH_IMPACT_MACRO
+    for item in events:
+        if isinstance(item, tuple):
+            ev, label = item[0], item[1]
+        else:
+            ev, label = item, "FOMC"
+        buf = FOMC_BUFFER_DAYS if label == "FOMC" else 0
+        if buffer_days is not None:
+            buf = buffer_days
+        delta = (exp_date - ev).days
+        if 0 <= delta <= buf:
+            return True
+    return False
+
+
+def filter_macro_safe_expiries(expirations, events=None, buffer_days=None):
+    """Drop expiries that would pin into FOMC / CPI / NFP / PCE."""
+    safe = []
+    for exp in expirations:
+        exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+        if not expiry_hits_macro(exp_date, events=events, buffer_days=buffer_days):
+            safe.append(exp)
+    return safe
+
+
+def _alpaca_held_tickers():
+    """Best-effort Alpaca longs. Empty when keys/network are unavailable."""
+    try:
+        from alpaca_trader import get_alpaca_client, get_current_positions
+        base = os.environ.get("ALPACA_API_BASE_URL", "")
+        paper = "paper" in base or not base
+        pos = get_current_positions(get_alpaca_client(paper=paper))
+        return {t for t, p in pos.items() if float(p.get("qty") or 0) > 0}
+    except Exception:
+        return set()
+
+
+def held_tickers():
+    """Tickers we already own — covered-call overlay plus the broker book."""
+    held = set(get_positions())
+    held |= _alpaca_held_tickers()
+    return held
+
+
+def find_drop_candidates(ranked, exclude=None):
+    """Filter ranked stocks down to genuine panic-dip candidates.
+
+    Returns (candidates, skipped) where skipped is [{ticker, reason}, ...].
+    """
+    exclude = {t.upper() for t in (exclude or set())}
     candidates = []
+    skipped = []
     for r in ranked:
+        ticker = (r.get("ticker") or "").upper()
+        if ticker in exclude:
+            skipped.append({"ticker": ticker, "reason": "已持有，不再叠空头 put"})
+            continue
+
         ind = r.get("indicators", {}) or {}
         d1 = ind.get("change_1d")
         d5 = ind.get("change_5d")
@@ -51,17 +137,26 @@ def find_drop_candidates(ranked):
         triggers = []
         if d5 is not None and d5 <= DROP_5D:
             triggers.append(f"5日 {d5:+.1f}%")
-        if d1 is not None and d1 <= DROP_1D:
+        one_day_fade = (
+            d1 is not None and d1 <= DROP_1D
+            and d5 is not None and d5 > RALLY_5D
+        )
+        if d1 is not None and d1 <= DROP_1D and not one_day_fade:
             triggers.append(f"单日 {d1:+.1f}%")
         if (d1m is not None and d1m <= DROP_1M
                 and rsi is not None and rsi < RSI_OVERSOLD):
             triggers.append(f"1月 {d1m:+.1f}% 且 RSI {rsi:.0f}")
         if not triggers:
+            if one_day_fade:
+                skipped.append({
+                    "ticker": ticker,
+                    "reason": f"单日 {d1:+.1f}% 但 5 日 {d5:+.1f}%，视为回吐而非恐慌",
+                })
             continue
 
         candidates.append({
-            "ticker": r["ticker"],
-            "name": r.get("name", r["ticker"]),
+            "ticker": ticker,
+            "name": r.get("name", ticker),
             "score": r.get("score_result", {}).get("score"),
             "recommendation": r.get("score_result", {}).get("recommendation", ""),
             "rsi": rsi,
@@ -73,7 +168,7 @@ def find_drop_candidates(ranked):
 
     # Worst 5-day performers first; cap fetch fan-out
     candidates.sort(key=lambda c: c["change_5d"] if c["change_5d"] is not None else 0)
-    return candidates[:MAX_CANDIDATES]
+    return candidates[:MAX_CANDIDATES], skipped
 
 
 def analyze_put_ladder(ticker, rate):
@@ -92,7 +187,8 @@ def analyze_put_ladder(ticker, rate):
     rv_trimmed = float(last21[last21.abs().rank(ascending=False) > 3].std() * np.sqrt(252))
 
     earnings = _next_earnings(t)
-    expiry, dte, status = _pick_expiry(t.options, earnings)
+    safe_exps = filter_macro_safe_expiries(t.options)
+    expiry, dte, status = _pick_expiry(safe_exps, earnings)
 
     result = {
         "ticker": ticker,
@@ -178,7 +274,8 @@ def _format_candidate(c, r):
                      "只在你愿意按行权价接股的前提下卖put，或直接跳过。\n")
 
     if r["status"] == "wait" or not r["ladder"]:
-        lines.append("> 所有 25+ DTE 到期日均跨财报（或期权数据不可用）——大跌+临近财报是双重风险，**建议观望**。\n")
+        lines.append("> 所有 25+ DTE 到期日均跨财报、贴着 FOMC/CPI/非农，或期权数据不可用——"
+                     "大跌+事件风险是双重风险，**建议观望**。\n")
         return "\n".join(lines)
 
     if vrp is not None and vrp < VRP_THIN_PT:
@@ -215,16 +312,22 @@ def _format_candidate(c, r):
     return "\n".join(lines)
 
 
-def build_sell_put_section(ranked):
+def build_sell_put_section(ranked, exclude=None):
     """Markdown section scanning the analyzed universe for sell-put setups."""
-    candidates = find_drop_candidates(ranked)
+    if exclude is None:
+        exclude = held_tickers()
+    candidates, skipped = find_drop_candidates(ranked, exclude=exclude)
 
     header = [
         "## Sell Put 雷达（大跌收租机会）\n",
-        f"*扫描规则：5日 ≤ {DROP_5D:.0f}% / 单日 ≤ {DROP_1D:.0f}% / "
+        f"*扫描规则：5日 ≤ {DROP_5D:.0f}% / 单日 ≤ {DROP_1D:.0f}%（5日仍 > +{RALLY_5D:.0f}% 则忽略）/ "
         f"1月 ≤ {DROP_1M:.0f}% 且 RSI < {RSI_OVERSOLD:.0f}。"
-        "大跌推高 put IV，是现金担保卖put的窗口：收租为主，被行权则以折价接股。*\n",
+        "已持有的股票不推荐；FOMC 后 3 个自然日内到期的合约跳过"
+        "（CPI/非农/PCE 当天到期也跳过）。收租为主，被行权则以折价接股。*\n",
     ]
+    if skipped:
+        skip_txt = "；".join(f"{s['ticker']}（{s['reason']}）" for s in skipped[:8])
+        header.append(f"*已排除：{skip_txt}*\n")
     if not candidates:
         header.append("今日 list 中无股票触发大跌条件，无 sell put 候选。\n")
         header.append("---\n")

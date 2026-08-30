@@ -59,16 +59,16 @@ def test_momentum_regime():
     googl_like = pd.Series(
         [300.0] * 100 + list(np.linspace(300, 408, 80))
         + list(np.linspace(408, 317, 5)) + list(np.linspace(317, 373.5, 67)))
-    regime, lo, hi = cca._momentum_regime(googl_like)
+    regime, lo, hi, _ = cca._momentum_regime(googl_like)
     assert "趋势强" in regime and (lo, hi) == (0.4, 0.6)
 
     meta_like = pd.Series(
         [600.0] * 100 + list(np.linspace(600, 787, 80)) + list(np.linspace(787, 590, 72)))
-    regime, lo, hi = cca._momentum_regime(meta_like)
+    regime, lo, hi, _ = cca._momentum_regime(meta_like)
     assert "磨底" in regime and (lo, hi) == (0.8, 1.0)
 
     neutral = pd.Series([95.0] * 150 + [100.0] * 30 + [88.0] * 72)
-    regime, lo, hi = cca._momentum_regime(neutral)
+    regime, lo, hi, _ = cca._momentum_regime(neutral)
     assert "中性" in regime and (lo, hi) == (0.6, 0.8)
 
 

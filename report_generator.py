@@ -2,6 +2,10 @@
 Report generator for stock recommendations.
 
 Generates clean Markdown reports with:
+- General stock-trend outlook (1 week / 1 month / 6 months) and add-vs-sell stance
+- Macro desk (rates, dollar, vol, risk appetite, event calendar)
+- Options desk (today's premium stance + tickets)
+- Config watch + top movers (chase vs dip)
 - Executive summary
 - Top picks ranked by score
 - Detailed per-stock analysis with reasoning
@@ -53,17 +57,31 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
     reduces = [r for r in ranked if r["score_result"]["recommendation"] == "Reduce"]
     avoids = [r for r in ranked if r["score_result"]["recommendation"] == "Avoid"]
 
-    # Aggregate market overview data
-    market_overview = _build_market_overview(ranked)
+    # General: current trend + 1w/1m/6m outlook + add-vs-sell stance
+    trend_section = _build_stock_trend_section(ranked, macro_result)
+
+    # Build macro snapshot (daily score, news, index table)
+    macro_section = _build_macro_section(macro_result) if macro_result else ""
 
     # AI / Semiconductor / Chip / Storage thematic sector analysis
     ai_semi_section = _build_ai_semi_section(ranked)
 
-    # Build macro section
-    macro_section = _build_macro_section(macro_result) if macro_result else ""
-
     # Build Alpaca portfolio performance section
     alpaca_section = _build_alpaca_performance()
+
+    try:
+        import daily_watch
+        macro_desk = daily_watch.build_macro_desk_section(macro_result)
+        options_desk = daily_watch.build_options_desk_section(
+            ranked, macro_result=macro_result
+        )
+        config_watch = daily_watch.build_config_watch_section(ranked)
+        movers_section = daily_watch.build_top_movers_section(ranked)
+    except Exception as e:
+        macro_desk = f"## Macro Desk — 今日宏观\n\n*Section failed: {e}*\n\n---\n"
+        options_desk = f"## Options Desk — 今日期权操作\n\n*Section failed: {e}*\n\n---\n"
+        config_watch = ""
+        movers_section = ""
 
     # Covered-call advisor for held shares (CC_POSITIONS env; empty when unset)
     try:
@@ -87,6 +105,16 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
 
 ---
 
+{trend_section}
+
+{macro_desk}
+
+{options_desk}
+
+{config_watch}
+
+{movers_section}
+
 {cc_section}
 
 {sp_section}
@@ -94,8 +122,6 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
 {macro_section}
 
 {alpaca_section}
-
-{market_overview}
 
 {ai_semi_section}
 
@@ -370,7 +396,11 @@ def _build_macro_section(macro_result):
     section += "### Market Snapshot\n\n"
     section += "| Index | Price | 1D | 1M | 3M | RSI |\n"
     section += "|-------|-------|-----|-----|-----|-----|\n"
-    for ticker in ["SPY", "QQQ", "DIA", "IWM", "^VIX", "TLT", "GLD"]:
+    for ticker in [
+        "SPY", "QQQ", "DIA", "IWM", "SMH", "XLE",
+        "^VIX", "TLT", "^IRX", "^FVX", "^TNX", "^TYX",
+        "GLD", "UUP", "USO", "HYG",
+    ]:
         info = market_data.get(ticker, {})
         if not info:
             continue
@@ -381,7 +411,11 @@ def _build_macro_section(macro_result):
         chg_3m = info.get("change_3m", 0)
         rsi = info.get("rsi", "—")
         rsi_str = f"{rsi:.0f}" if isinstance(rsi, (int, float)) else rsi
-        section += f"| {name} | ${price:.2f} | {chg_1d:+.2f}% | {chg_1m:+.2f}% | {chg_3m:+.2f}% | {rsi_str} |\n"
+        if ticker in ("^TNX", "^TYX", "^IRX", "^FVX", "^VIX"):
+            price_str = f"{price:.2f}"
+        else:
+            price_str = f"${price:.2f}"
+        section += f"| {name} | {price_str} | {chg_1d:+.2f}% | {chg_1m:+.2f}% | {chg_3m:+.2f}% | {rsi_str} |\n"
 
     # Bull/Bear case
     if analysis.get("bull_case") or analysis.get("bear_case"):
@@ -846,74 +880,103 @@ def _ai_semi_row(r, sub_sector):
     )
 
 
+def _fmt_pct(val, digits=1):
+    if val is None:
+        return "—"
+    try:
+        return f"{float(val):+.{digits}f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _build_stock_trend_section(ranked, macro_result=None):
+    """General block: current trend, 1w/1m/6m outlook, add-vs-sell stance."""
+    import macro_analyzer as ma
+
+    market_data = (macro_result or {}).get("market_data") or {}
+    trend = (macro_result or {}).get("trend") or ma.classify_market_trend(market_data)
+    outlook = (macro_result or {}).get("trend_outlook")
+    if not outlook:
+        score = (macro_result or {}).get("score", 50)
+        outlook = ma.fallback_trend_outlook(trend, score, market_data)
+
+    stance = outlook.get("stance", "hold")
+    stance_label = outlook.get("stance_label") or ma.STANCE_LABELS.get(stance, stance)
+
+    spy_dd = _fmt_pct(trend.get("spy_from_high"))
+    qqq_dd = _fmt_pct(trend.get("qqq_from_high"))
+    smh_dd = _fmt_pct(trend.get("smh_from_high"))
+    vix = trend.get("vix")
+    vix_s = f"{vix:.1f}" if isinstance(vix, (int, float)) else "—"
+    sma200 = "上方" if trend.get("above_sma200") else (
+        "下方" if trend.get("above_sma200") is False else "未知"
+    )
+
+    def _row(label, horizon):
+        h = horizon or {}
+        direction = h.get("direction", "range")
+        dir_label = ma.HORIZON_DIR_LABELS.get(direction, direction)
+        view = h.get("view") or "—"
+        return f"| {label} | {dir_label} | {view} |\n"
+
+    section = "## General — 美股趋势判断\n\n"
+    section += (
+        f"**当前趋势：** {trend.get('label', '—')} · "
+        f"{trend.get('structure_label', '')}\n\n"
+    )
+    section += (
+        f"标普距近一年高点 {spy_dd} | 纳指 {qqq_dd} | 半导体 SMH {smh_dd} | "
+        f"VIX {vix_s} | 标普相对 200 日均线：{sma200}\n\n"
+    )
+    if outlook.get("current_trend"):
+        section += f"{outlook['current_trend']}\n\n"
+
+    section += f"**仓位建议：{stance_label}**\n\n"
+    if outlook.get("sizing_guidance"):
+        section += f"{outlook['sizing_guidance']}\n\n"
+
+    section += "| 期限 | 方向 | 判断 |\n"
+    section += "|------|------|------|\n"
+    section += _row("未来一周", outlook.get("outlook_1w"))
+    section += _row("未来一个月", outlook.get("outlook_1m"))
+    section += _row("未来半年", outlook.get("outlook_6m"))
+    section += "\n"
+
+    section += (
+        "对照：尽量卖出 = 降低风险预算、停止新开仓；"
+        "大量抄底 = 只在指数已有双位数回撤且波动率恐慌时才考虑。"
+        "普通回撤默认分批，不把计划资金一次打完。\n"
+    )
+
+    # Keep a compact breadth read from the scored universe
+    if ranked:
+        regimes = {}
+        trend_scores = []
+        for r in ranked:
+            sr = r["score_result"]
+            regime = sr.get("regime", "Unknown")
+            regimes[regime] = regimes.get(regime, 0) + 1
+            comp = sr.get("components", {})
+            if "trend" in comp:
+                trend_scores.append(comp["trend"]["score"])
+        total = len(ranked)
+        avg_trend = sum(trend_scores) / len(trend_scores) if trend_scores else 50
+        section += (
+            f"\n**股票池内部：** 平均趋势分 {avg_trend:.0f}/100。"
+            "Regime 分布："
+        )
+        bits = []
+        for regime, count in sorted(regimes.items(), key=lambda x: -x[1])[:5]:
+            bits.append(f"{regime} {count / total * 100:.0f}%")
+        section += "；".join(bits) + "\n"
+
+    section += "\n---\n"
+    return section
+
+
 def _build_market_overview(ranked):
-    """Build a general market trend overview section from aggregated stock data."""
-    if not ranked:
-        return ""
-
-    # Count regimes across all stocks
-    regimes = {}
-    trend_scores = []
-    sentiment_scores = []
-    claude_insights = []
-
-    for r in ranked:
-        sr = r["score_result"]
-        regime = sr.get("regime", "Unknown")
-        regimes[regime] = regimes.get(regime, 0) + 1
-
-        comp = sr.get("components", {})
-        if "trend" in comp:
-            trend_scores.append(comp["trend"]["score"])
-        if "sentiment" in comp:
-            sentiment_scores.append(comp["sentiment"]["score"])
-
-        # Collect unique Claude synthesis outlooks
-        synth = sr.get("trend_detail", {}).get("claude_synthesis", {})
-        if synth.get("outlook"):
-            outlook = synth["outlook"]
-            if outlook not in claude_insights:
-                claude_insights.append(outlook)
-
-    total = len(ranked)
-    avg_trend = sum(trend_scores) / len(trend_scores) if trend_scores else 50
-    avg_sent = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 50
-
-    # Determine overall market sentiment label
-    if avg_trend >= 65:
-        market_mood = "Bullish"
-    elif avg_trend >= 55:
-        market_mood = "Moderately Bullish"
-    elif avg_trend >= 45:
-        market_mood = "Neutral"
-    elif avg_trend >= 35:
-        market_mood = "Moderately Bearish"
-    else:
-        market_mood = "Bearish"
-
-    overview = "## Market Overview\n\n"
-    overview += f"**Overall Market Mood:** {market_mood} (avg trend score: {avg_trend:.0f}/100)\n\n"
-
-    # Regime distribution
-    overview += "**Market Regime Distribution:**\n\n"
-    overview += "| Regime | Stocks | % |\n"
-    overview += "|--------|--------|---|\n"
-    for regime, count in sorted(regimes.items(), key=lambda x: -x[1]):
-        pct = count / total * 100
-        overview += f"| {regime} | {count} | {pct:.0f}% |\n"
-
-    overview += f"\n**Average Trend Score:** {avg_trend:.0f}/100 | "
-    overview += f"**Average Sentiment Score:** {avg_sent:.0f}/100\n"
-
-    # Key macro insights from Claude synthesis (show up to 5 unique)
-    if claude_insights:
-        overview += "\n**Key Macro Insights:**\n"
-        for insight in claude_insights[:5]:
-            # Truncate long insights
-            text = insight[:200] + "..." if len(insight) > 200 else insight
-            overview += f"- {text}\n"
-
-    return overview
+    """Back-compat wrapper. The daily report uses `_build_stock_trend_section`."""
+    return _build_stock_trend_section(ranked, None)
 
 
 def _ticker_list(items, max_show=10):

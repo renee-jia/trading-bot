@@ -101,8 +101,47 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
         f"Daily Stock Analysis — {date_str}",
         f"Stocks analyzed: {len(results)}",
         "",
-        f"=== TOP PICKS ({len(top_picks)}) ===",
     ]
+    outlook = (macro_result or {}).get("trend_outlook") or {}
+    trend = (macro_result or {}).get("trend") or {}
+    if outlook or trend:
+        summary_lines.append("=== GENERAL — 美股趋势 ===")
+        if trend.get("label"):
+            summary_lines.append(
+                f"当前: {trend.get('label')} · {trend.get('structure_label', '')}"
+            )
+        if outlook.get("stance_label"):
+            summary_lines.append(f"仓位建议: {outlook['stance_label']}")
+        if outlook.get("sizing_guidance"):
+            summary_lines.append(outlook["sizing_guidance"])
+        for key, title in (
+            ("outlook_1w", "一周"),
+            ("outlook_1m", "一个月"),
+            ("outlook_6m", "半年"),
+        ):
+            h = outlook.get(key) or {}
+            if h.get("view"):
+                direction = h.get("direction", "")
+                summary_lines.append(f"{title} ({direction}): {h['view']}")
+        summary_lines.append("")
+
+    try:
+        import daily_watch
+        summary_lines.extend(
+            daily_watch.email_macro_lines(macro_result=macro_result)
+        )
+        summary_lines.append("")
+        summary_lines.extend(
+            daily_watch.email_watch_lines(results, macro_result=macro_result)
+        )
+        summary_lines.append("")
+    except Exception as e:
+        summary_lines.append(f"=== MACRO / OPTIONS / WATCH (failed: {e}) ===")
+        summary_lines.append("")
+
+    summary_lines.extend([
+        f"=== TOP PICKS ({len(top_picks)}) ===",
+    ])
     for r in top_picks[:15]:
         sr = r["score_result"]
         summary_lines.append(
@@ -144,7 +183,10 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
     if send_mail:
         with open(report_path, "r") as f:
             report_content = f.read()
-        subject = f"Stock Analysis Report — {date_str} | {len(top_picks)} Buys"
+        subject = (
+            f"Stock Analysis Report — {date_str} | "
+            f"{(macro_result or {}).get('trend_outlook', {}).get('stance_label') or (str(len(top_picks)) + ' Buys')}"
+        )
         email_sender.send_report_email(report_content, subject=subject)
 
     return report_path
