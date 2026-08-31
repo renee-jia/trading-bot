@@ -20,10 +20,11 @@
 
 | Snapshot | 🤖 Strategy (paper) | S&P 500 (SPY) | Nasdaq-100 (QQQ) | Equity |
 |---|---:|---:|---:|---:|
-| **2026-07-09** (latest) | **+39.8%** | +13.5% | +21.4% | $139,829 |
+| **2026-08-31** (latest) | **+34.5%** | +16.1% | +20.2% | $134,457 |
+| 2026-07-09 | +39.8% | +13.5% | +21.4% | $139,829 |
 | 2026-06-04 | +53.6% | +13.5% | +24.8% | $159,560 |
 
-Starting capital **$100,000** → peak equity **$165,578** (2026-06), current equity **$139,829**, max drawdown **−20.7%**, 35 open positions concentrated in semis/AI (top holdings: CRDO, DELL, MU, AMD). The pullback from the June peak reflects the July semiconductor selloff — a high-beta strategy amplifies both directions.
+Starting capital **$100,000** → peak equity **$165,578** (2026-06-23), current equity **$134,457**, max drawdown **−26.8%**. The book is now **10** names and about **24% cash** (top holdings: TEAM, WIX, PATH) after rotating out of the July semiconductor pile. Still ahead of SPY and QQQ over the same window; the gap vs the June peak is the cost of that high-beta ride.
 
 📊 **Full breakdown + equity curve → [docs/PAPER_TRADING.md](docs/PAPER_TRADING.md)** (refresh anytime with `python scripts/fetch_paper_performance.py`)
 
@@ -72,6 +73,7 @@ The score for every stock is produced by a panel of independent analysis agents,
                                         ▼
                          ┌─────────────────────────────┐
                          │  Alpaca executor + report   │  T+1 rebalance, email digest
+                         │  (trend / macro / options   │  desks + config & movers)
                          └─────────────────────────────┘
 ```
 
@@ -111,7 +113,7 @@ python -m venv .venv_trading && source .venv_trading/bin/activate
 pip install -r requirements.txt
 cp .env.example .env            # then fill in your Alpaca keys
 
-# Analyze the full universe (157 US equities)
+# Analyze the full universe (161 US equities / ETFs)
 python main.py
 
 # Specific tickers, top 10, skip news for speed
@@ -146,7 +148,10 @@ main.py  daily_report.py        Entry points (CLI + daily runner)
 data_fetcher.py                 Prices, news, benchmarks (yfinance)
 technical_analyzer.py           Trend / momentum / volume / volatility
 trend_analyzer.py               Relative strength vs SPY, market regime
-macro_analyzer.py               Market regime & risk-on/off
+macro_analyzer.py               Market regime, 1w/1m/6m stance, rates tape
+daily_watch.py                  Options desk, config watch, top movers
+covered_call_advisor.py         Covered-call ladders for held shares
+sell_put_advisor.py             Cash-secured puts on panic dips
 sentiment_analyzer.py           News headline sentiment
 stock_discovery.py              Weekly universe expansion
 report_generator.py             Markdown report output
@@ -164,8 +169,9 @@ scripts/                        fetch_paper_performance.py
 
 ## ⚙️ Deployment
 
-- **Local daily agent (macOS):** `./setup_daily.sh install` renders a git-ignored launchd plist from `*.plist.template` and schedules `daily_report.py` for 8 AM on trading days.
-- **Container:** `docker build -t trading-bot .` — secrets are injected at runtime (`--env`), never baked into the image.
+- **Production:** GCP Cloud Run job `daily-report` runs `daily_report.py --trade` on trading mornings (Alpaca paper). Secrets are runtime env vars, not baked into the image.
+- **Local daily agent (macOS):** `./setup_daily.sh install` renders a git-ignored launchd plist from `*.plist.template` and schedules a report-only run (no `--trade`) so it does not double-fill the paper account.
+- **Container:** `docker build -t trading-bot .` — secrets are injected at runtime (`--env`).
 
 ---
 
