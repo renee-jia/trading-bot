@@ -13,16 +13,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import daily_watch as dw
 
 
-def _row(ticker, d1, d5=0.0, d1m=0.0, rsi=50, score=70, rec="Buy", name=None):
+def _row(ticker, d1, d5=0.0, d1m=0.0, rsi=50, score=70, rec="Buy",
+         name=None, from_high=None):
+    ind = {
+        "change_1d": d1,
+        "change_5d": d5,
+        "change_1m": d1m,
+        "rsi": rsi,
+    }
+    if from_high is not None:
+        ind["pct_from_52w_high"] = from_high
     return {
         "ticker": ticker,
         "name": name or ticker,
-        "indicators": {
-            "change_1d": d1,
-            "change_5d": d5,
-            "change_1m": d1m,
-            "rsi": rsi,
-        },
+        "indicators": ind,
         "score_result": {"score": score, "recommendation": rec},
     }
 
@@ -42,6 +46,55 @@ def test_rip_without_extension_is_no_chase():
     assert card["stock_action"] == "no_chase"
     card = dw.classify_options(card, {"status": "open"})
     assert card["options_action"] == "no_long_call"
+
+
+def test_buy_ladder_is_not_only_panic_dumps():
+    quiet = dw.classify_buy(
+        dw.classify_stock(_row("NVDA", d1=0.2, d5=1.0, rsi=52, score=70)),
+        {"status": "open"},
+    )
+    assert quiet["buy_action"] == "scale_in"
+
+    discounted = dw.classify_buy(
+        dw.classify_stock(_row("META", d1=1.2, d5=5.9, rsi=50, score=64, from_high=-26)),
+        {"status": "open"},
+    )
+    assert discounted["buy_action"] == "scale_in"
+
+    sale = dw.classify_buy(
+        dw.classify_stock(_row("KLAC", d1=-5.6, d5=-3.0, rsi=38, score=71)),
+        {"status": "open"},
+    )
+    assert sale["buy_action"] == "buy"
+
+    expensive = dw.classify_buy(
+        dw.classify_stock(_row("AAPL", d1=0.5, rsi=72, score=70, from_high=-1.0)),
+        {"status": "open"},
+    )
+    assert expensive["buy_action"] == "watch_buy"
+
+    ripped = dw.classify_buy(
+        dw.classify_stock(_row("TEAM", d1=5.2, d5=18.0, d1m=94.0, rsi=79, score=68)),
+        {"status": "open"},
+    )
+    assert ripped["buy_action"] == "no_buy"
+
+
+def test_nfp_eve_still_lists_buys_but_shrinks_size():
+    card = dw.classify_buy(
+        dw.classify_stock(_row("NVDA", d1=-2.0, d5=-3.0, rsi=48, score=72)),
+        dw.options_event_status(today=date(2026, 9, 3)),
+    )
+    assert card["buy_action"] == "buy"
+    assert "10–15%" in card["buy_size"]
+
+
+def test_held_quality_is_small_add_not_new_buy():
+    card = dw.classify_buy(
+        dw.classify_stock(_row("GOOGL", d1=-1.2, rsi=45, score=66, from_high=-14), held=True),
+        {"status": "open"},
+    )
+    assert card["buy_action"] == "add_held"
 
 
 def test_quality_dip_allows_put_if_not_held():
@@ -96,8 +149,8 @@ def test_fomc_blackout_blocks_new_shorts():
 def test_nfp_eve_is_blackout_week_before_is_caution():
     assert dw.options_event_status(today=date(2026, 9, 3))["status"] == "blackout"
     assert dw.options_event_status(today=date(2026, 9, 1))["status"] == "caution"
-    # 10/5 is 9 days before 10/14 CPI — outside the 5-day caution window
-    assert dw.options_event_status(today=date(2026, 10, 5))["status"] == "open"
+    # October PCE coverage is not verified; no future-event inference is safe.
+    assert dw.options_event_status(today=date(2026, 10, 5))["status"] == "unknown"
 
 
 def test_config_watch_keeps_core_and_filters_quiet_names():
@@ -150,7 +203,7 @@ def test_report_sections_render():
         ranked, held={"TEAM", "META"}, today=date(2026, 8, 24),
     )
     assert "Options Desk" in desk
-    assert "可写权利金" in desk or "谨慎" in desk or "冻结" in desk
+    assert "日历覆盖未确认" in desk
     assert "TEAM" in desk
     assert "Config 关注名单" in watch
     assert "核心池" in watch
@@ -161,6 +214,14 @@ def test_report_sections_render():
     )
     assert any("OPTIONS DESK" in ln for ln in email)
     assert any("TOP MOVERS" in ln for ln in email)
+    assert any("建议买入" in ln for ln in email)
+
+    buys = dw.build_buy_section(
+        ranked, held={"TEAM", "META"}, today=date(2026, 8, 24),
+    )
+    assert "今日建议买入" in buys
+    assert "NVDA" in buys
+    assert "建议" in buys
 
     macro = dw.build_macro_desk_section(
         {

@@ -152,9 +152,11 @@ macro_analyzer.py               Market regime, 1w/1m/6m stance, rates tape
 daily_watch.py                  Options desk, config watch, top movers
 covered_call_advisor.py         Covered-call ladders for held shares
 sell_put_advisor.py             Cash-secured puts on panic dips
+ai_sell_put_plan.py             Daily sell-put entry plan for a fixed AI watch list
 sentiment_analyzer.py           News headline sentiment
 stock_discovery.py              Weekly universe expansion
-report_generator.py             Markdown report output
+report_generator.py             Markdown + HTML report output
+report_format.py                Shared web/email styling and Markdown rendering
 email_sender.py                 Email digest
 alpaca_trader.py                Paper/live execution via Alpaca
 backtest_strategy.py            Strategy vs buy-and-hold (single window)

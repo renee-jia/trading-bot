@@ -730,6 +730,14 @@ def _get_latest_indicators(data, params):
     if len(close) >= 63:
         indicators["change_3m"] = round(float((close.iloc[-1] / close.iloc[-63] - 1) * 100), 2)
 
+    lookback = min(len(close), 252)
+    if lookback >= 20:
+        high_52w = float(close.tail(lookback).max())
+        if high_52w > 0:
+            indicators["pct_from_52w_high"] = round(
+                float((close.iloc[-1] / high_52w - 1) * 100), 2
+            )
+
     # RSI
     rsi = ta.rsi(close, length=params["rsi_length"])
     if rsi is not None and len(rsi) > 0 and not pd.isna(rsi.iloc[-1]):

@@ -15,7 +15,8 @@ this module decides *whether* those structures are allowed today.
 """
 from datetime import date, datetime
 
-from sell_put_advisor import HIGH_IMPACT_MACRO, held_tickers
+from sell_put_advisor import (HIGH_IMPACT_MACRO, held_tickers,
+                              MACRO_COVERAGE_START, MACRO_COVERAGE_END)
 
 try:
     from configs import CORE_WATCH, UNIVERSE
@@ -38,9 +39,13 @@ EXTEND_1M = 30.0
 EXTEND_RSI = 75.0
 QUALITY_SCORE = 60.0
 WEAK_SCORE = 50.0
+BUY_SCORE = 65.0
+SCALE_SCORE = 60.0
+WATCH_SCORE = 58.0
 NOTABLE_1D = 3.0
 NOTABLE_5D = 6.0
 TOP_N = 8
+BUY_LIST_N = 8
 
 STOCK_LABELS = {
     "trim_extended": "超买减仓，不跟风",
@@ -51,9 +56,17 @@ STOCK_LABELS = {
     "hold_watch": "持有观望",
 }
 
+BUY_LABELS = {
+    "buy": "建议买入",
+    "scale_in": "建议分批买入",
+    "add_held": "已持有，可小加",
+    "watch_buy": "候补，等回踩",
+    "no_buy": "今日不买",
+}
+
 OPTIONS_LABELS = {
-    "sell_call": "可写 covered call",
-    "sell_put": "可考虑卖现金担保 put",
+    "sell_call": "covered call 形态候选，待期权链确认",
+    "sell_put": "put 形态候选，待期权链确认",
     "no_long_call": "不买 call 追涨",
     "no_put": "已持有，不再叠 put",
     "wait_event": "事件窗口，不开新空头",
@@ -81,7 +94,7 @@ def _fmt(value, digits=1, suffix="%"):
 def next_macro_event(today=None, events=None):
     """Return (event_date, label, days_ahead) or None."""
     today = today or date.today()
-    events = events or HIGH_IMPACT_MACRO
+    events = HIGH_IMPACT_MACRO if events is None else events
     upcoming = []
     for item in events:
         ev, label = (item[0], item[1]) if isinstance(item, tuple) else (item, "EVENT")
@@ -102,14 +115,17 @@ def options_event_status(today=None, events=None):
     open:     otherwise
     """
     today = today or date.today()
+    if events is None and not MACRO_COVERAGE_START <= today <= MACRO_COVERAGE_END:
+        return {'status':'unknown', 'label':'日历覆盖未确认', 'event':None, 'days':None,
+                'reason':'宏观日历超出已核验范围，暂停新期权候选，先更新日历。'}
     nxt = next_macro_event(today, events)
     if nxt is None:
         return {
-            "status": "open",
-            "label": "可写权利金",
+            "status": "unknown",
+            "label": "日历覆盖未确认",
             "event": None,
             "days": None,
-            "reason": "近期无高影响数据，短权利金可以按纪律开。",
+            "reason": "没有未来事件条目，不能据此判断可以新开仓。",
         }
     ev, label, days = nxt
     if label == "FOMC" and days <= 2:
@@ -146,6 +162,7 @@ def classify_stock(row, held=False):
     d5 = _num(ind.get("change_5d"))
     d1m = _num(ind.get("change_1m"))
     rsi = _num(ind.get("rsi"))
+    from_high = _num(ind.get("pct_from_52w_high", ind.get("from_high")))
     score = _num(sr.get("score"))
     rec = sr.get("recommendation") or ""
     levered = ticker in LEVERED
@@ -178,7 +195,7 @@ def classify_stock(row, held=False):
         note = "杠杆ETF的大跌会继续放大，不按普通股票去抄。"
     elif dumped and score is not None and score >= QUALITY_SCORE:
         stock = "quality_dip"
-        note = f"评分 {score:.0f}（{rec or '—'}），回撤更像错杀，可以分批而不是一把买。"
+        note = f"评分 {score:.0f}（{rec or '—'}），只说明模型仍偏强，需核查下跌原因，不能据此认定错杀。"
     elif dumped and (score is None or score < WEAK_SCORE):
         stock = "avoid_knife"
         note = f"评分 {score:.0f}，下跌可能是基本面在变差，不接刀。" if score is not None else "评分缺失，按不接刀处理。"
@@ -191,11 +208,13 @@ def classify_stock(row, held=False):
 
     return {
         "ticker": ticker,
+        "options_decision": row.get("options_decision"),
         "name": name,
         "sector": sector,
         "change_1d": d1,
         "change_5d": d5,
         "change_1m": d1m,
+        "from_high": from_high,
         "rsi": rsi,
         "score": score,
         "recommendation": rec,
@@ -227,10 +246,10 @@ def classify_options(card, event_status):
 
     if levered:
         opt, note = "skip_levered", "杠杆产品不做短权利金。"
-    elif status == "blackout":
+    elif status in ("blackout", "unknown"):
         opt, note = "wait_event", (event_status or {}).get("reason") or "事件窗口内不开新空头。"
     elif stock == "trim_extended" and held:
-        opt, note = "sell_call", "已持有且超买：用 covered call 做软止盈，比市价砍一半更稳。"
+        opt, note = "sell_call", "股票形态提示评估 covered call；仍须期权链、仓位及卖股意愿确认。"
     elif stock in ("trim_extended", "no_chase") and not held:
         opt, note = "no_long_call", "不要买 call 去追已经拉过的日K。"
     elif stock == "no_chase" and held:
@@ -253,17 +272,126 @@ def classify_options(card, event_status):
     card["options_action"] = opt
     card["options_label"] = OPTIONS_LABELS[opt]
     card["options_note"] = note
+    if card.get('options_decision') is not None:
+        from options_decision import label
+        decision = card['options_decision']
+        card['options_action'] = decision.get('action', 'wait')
+        card['options_label'] = label(decision)
+        card['options_note'] = '；'.join(decision.get('reasons') or ['候选须核验实时报价、资金和现有仓位'])
     return card
 
 
-def annotate(ranked, held=None, today=None, events=None):
+def _size_for(tier, event_status, held):
+    status = (event_status or {}).get("status") or "open"
+    if held:
+        return "已有仓：再用计划资金的约 10%"
+    if tier == "buy":
+        if status == "blackout":
+            return "计划资金 10–15%，收盘附近或数据后再补，不要开盘扫货"
+        if status == "caution":
+            return "计划资金 15–20%"
+        return "计划资金 20–30%，仍分两笔"
+    if tier == "scale_in":
+        if status in ("blackout", "caution"):
+            return "计划资金 10–15%，事件日前不要一次买完"
+        return "计划资金 15–25%，分两到三笔"
+    return "先不加，记下回踩价"
+
+
+def classify_buy(card, event_status=None, tape=None):
+    """Independent buy ladder. Event freeze hits options, not this list.
+
+    buy        评分够 + 已经有折扣 + 没追高
+    scale_in   评分过线、位置不贵，日常分批
+    watch_buy  名字好但今天偏贵，等回踩
+    add_held   已持有且仍符合加仓条件，只小加
+    no_buy     超买、弱评分、杠杆、接刀
+    """
+    card = dict(card)
+    score = card.get("score")
+    rsi = card.get("rsi")
+    d1 = card.get("change_1d")
+    d5 = card.get("change_5d")
+    from_high = card.get("from_high")
+    rec = card.get("recommendation") or ""
+    structure = card.get("stock_action")
+    held = card.get("held")
+    levered = card.get("levered")
+    tape_action = (tape or {}).get("stock_action")
+
+    ripped = structure in ("trim_extended", "no_chase")
+    knife = structure == "avoid_knife"
+    discounted = (
+        (from_high is not None and from_high <= -8)
+        or (d5 is not None and d5 <= -2.5)
+        or (d1 is not None and d1 <= -1.5 and (rsi is None or rsi <= 55))
+    )
+    mildly_cheap = (
+        (from_high is not None and from_high <= -5)
+        or (d5 is not None and d5 <= -1.0)
+        or (d1 is not None and d1 <= -0.8)
+        or (score is not None and score >= 70 and (rsi is None or rsi < 58))
+    )
+    hot_entry = (
+        (rsi is not None and rsi >= 65)
+        or (d1 is not None and d1 >= 1.5)
+        or (from_high is not None and from_high > -3)
+    )
+    strong = (
+        score is not None and score >= BUY_SCORE
+        and rec in ("Buy", "Strong Buy", "")
+    ) or (score is not None and score >= 68)
+    decent = score is not None and score >= SCALE_SCORE
+    watchable = score is not None and score >= WATCH_SCORE
+
+    if levered or knife or ripped or (rsi is not None and rsi >= 75):
+        tier, note = "no_buy", "超买、弱评分或杠杆产品，今天不买。"
+    elif score is None or score < WATCH_SCORE:
+        tier, note = "no_buy", "评分不够，先不列入买入名单。"
+    elif strong and discounted and (rsi is None or rsi < 62) and (d1 is None or d1 < 2):
+        tier, note = "buy", "评分够、已经有折扣、也没有在追高。仍分批，不要一次打满。"
+    elif decent and mildly_cheap and (rsi is None or rsi < 68) and (d1 is None or d1 < 2.5):
+        tier, note = "scale_in", "过线的质量股，位置不贵。用分批代替观望到永远。"
+    elif watchable and not ripped:
+        if hot_entry:
+            tier, note = "watch_buy", "名字可以，今天偏贵。等 RSI 回到 60 下或再回踩 2–3%。"
+        elif decent:
+            tier, note = "scale_in", "评分过线且没有明显超买，可以开始第一批。"
+        else:
+            tier, note = "watch_buy", "刚过关注线，先放进候补，等更好的价。"
+    else:
+        tier, note = "no_buy", "今天没有足够的买入理由。"
+
+    # Macro tape can haircut, not delete, a quality dip.
+    if tape_action == "trim" and tier == "buy" and structure != "quality_dip":
+        tier, note = "scale_in", note + " 宏观偏紧，从「买入」降到分批。"
+    if tape_action == "trim" and tier == "scale_in" and structure != "quality_dip":
+        note = note + " 宏观偏紧，第一批再小一档。"
+
+    if held and tier in ("buy", "scale_in"):
+        tier = "add_held"
+        note = "已经有仓位。只小加，不按新开仓去打。"
+
+    card["buy_action"] = tier
+    card["buy_label"] = BUY_LABELS[tier]
+    card["buy_note"] = note
+    card["buy_size"] = _size_for(
+        "buy" if tier == "buy" else "scale_in" if tier in ("scale_in", "add_held") else "watch",
+        event_status,
+        held and tier == "add_held",
+    )
+    return card
+
+
+def annotate(ranked, held=None, today=None, events=None, tape=None):
     """Classify every scored name. Returns (cards, event_status)."""
     held = {t.upper() for t in (held if held is not None else held_tickers())}
     event_status = options_event_status(today=today, events=events)
     cards = []
     for row in ranked or []:
         card = classify_stock(row, held=row.get("ticker", "").upper() in held)
-        cards.append(classify_options(card, event_status))
+        card = classify_options(card, event_status)
+        cards.append(classify_buy(card, event_status, tape))
     return cards, event_status
 
 
@@ -299,19 +427,39 @@ def top_movers(cards, n=TOP_N):
     return up, down
 
 
+def buy_picks(cards, include_watch=False, n=BUY_LIST_N):
+    """Ranked buy / scale-in / add-held names for the daily list."""
+    rank = {"buy": 0, "scale_in": 1, "add_held": 2, "watch_buy": 3}
+    picks = [c for c in cards if c.get("buy_action") in rank]
+    if not include_watch:
+        picks = [c for c in picks if c["buy_action"] != "watch_buy"]
+    picks.sort(key=lambda c: (
+        rank.get(c["buy_action"], 9),
+        -(c["score"] or 0),
+        c["from_high"] if c.get("from_high") is not None else 0,
+    ))
+    return picks[:n]
+
+
 def action_tickets(cards):
     """Names the desk should actually mention today."""
     interesting = []
     for c in cards:
-        if c["stock_action"] == "hold_watch" and c["options_action"] == "none":
+        if (
+            c["stock_action"] == "hold_watch"
+            and c["options_action"] == "none"
+            and c.get("buy_action") in (None, "no_buy", "watch_buy")
+        ):
             continue
         interesting.append(c)
     interesting.sort(key=lambda c: (
-        0 if c["stock_action"] == "trim_extended" else
-        1 if c["stock_action"] == "quality_dip" else
-        2 if c["stock_action"] == "avoid_knife" else
-        3 if c["stock_action"] == "no_chase" else 4,
-        -(abs(c["change_1d"] or 0)),
+        0 if c.get("buy_action") == "buy" else
+        1 if c.get("buy_action") in ("scale_in", "add_held") else
+        2 if c["stock_action"] == "trim_extended" else
+        3 if c["stock_action"] == "quality_dip" else
+        4 if c["stock_action"] == "avoid_knife" else
+        5 if c["stock_action"] == "no_chase" else 6,
+        -(c["score"] or 0),
     ))
     return interesting
 
@@ -328,7 +476,7 @@ def _table(headers, rows):
 
 def _row_for_watch(c):
     rsi = f"{c['rsi']:.0f}" if c["rsi"] is not None else "—"
-    score = f"{c['score']:.0f}" if c["score"] is not None else "—"
+    score = f"{c['score']:.1f}" if c["score"] is not None else "—"
     mark = "持有" if c["held"] else ""
     return [
         f"**{c['ticker']}**",
@@ -339,6 +487,7 @@ def _row_for_watch(c):
         score,
         mark,
         c["stock_label"],
+        c.get("buy_label") or "—",
         c["options_label"],
     ]
 
@@ -439,7 +588,7 @@ def build_macro_desk_section(macro_result=None, today=None):
     opt = tape.get("options_action")
     stock_map = {
         "scale_in": "股票：分批，不打满",
-        "hold": "股票：持有，不追不砸",
+        "hold": "指数：持有不追。个股仍看「今日建议买入」",
         "trim": "股票：减高 beta，停新开仓",
     }
     opt_map = {
@@ -447,7 +596,7 @@ def build_macro_desk_section(macro_result=None, today=None):
         "caution": "期权：少张数、远月，或等到数据后再写",
         "no_new_short": "期权：今天不开新的短 put / 短 call",
         "sell_call_ok": "期权：已持有的强势股可以写 call，不买短 call",
-        "selective": "期权：只做质量回撤的 put 或已持有的 call，不扫全市场",
+        "selective": "期权：按统一方向分、波动估值、流动性及事件窗口筛选，具体结构见 Options Research",
     }
     lines.append(f"- {stock_map.get(stock, '股票：按趋势栏执行')}")
     lines.append(f"- {opt_map.get(opt, '期权：按 Options Desk 执行')}")
@@ -476,12 +625,93 @@ def email_macro_lines(macro_result=None, today=None):
             f"下一事件: {event['event'].isoformat()} {event.get('event_label', '')} "
             f"({event.get('days')} 天) · {event['label']}"
         )
+    import cash_entry_plan
+    plan = (macro_result or {}).get('cash_entry_plan') or cash_entry_plan.from_market_data(
+        (macro_result or {}).get('market_data'),today=today)
+    lines.extend(cash_entry_plan.email_lines(plan))
     return lines
+
+
+def _load_cards(ranked, held=None, today=None, macro_result=None):
+    return annotate(
+        ranked,
+        held=held,
+        today=today,
+        tape=(macro_result or {}).get("macro_tape"),
+    )
+
+
+def build_buy_section(ranked, macro_result=None, held=None, today=None):
+    """Markdown: explicit 建议买入 / 分批 / 候补 list."""
+    cards, event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
+    active = buy_picks(cards, include_watch=False, n=BUY_LIST_N)
+    waiting = [c for c in buy_picks(cards, include_watch=True, n=16)
+               if c["buy_action"] == "watch_buy"][:5]
+
+    lines = [
+        "## 今日建议买入\n",
+        "这一栏和「宏观持有 / 期权冻结」是分开的。指数可以继续拿着，"
+        "个股仍按评分、距高点、RSI 给出买入档位。事件窗口只缩小仓位，不把名单清空。\n",
+        "**规则：** 建议买入 = 评分 ≥ 65 且已有折扣（距高点 ≤ -8% 或 5 日 ≤ -2.5%）；"
+        "建议分批 = 评分 ≥ 60 且位置不贵；候补 = 名字好但今天偏贵。"
+        "超买、弱评分、杠杆 ETF 明确「今日不买」。\n",
+        "**资金口径：** 下表百分比针对各股票预先分配的买入预算，不是每只占总资金的比例；"
+        "若使用 General 的 $400k 现金池，须先满足该计划的入场条件和本批总额上限。\n",
+    ]
+    if event.get("status") in ("caution", "blackout"):
+        nxt = ""
+        if event.get("event"):
+            nxt = f"{event['event'].isoformat()} {event.get('event_label', '')}"
+        lines.append(
+            f"事件窗口缩小新开仓规模：临近 {nxt or '宏观数据'}。"
+            "买入名单仍需分批，金额按下表事件档位参考，不要开盘扫货。期权动作以统一评分候选为准。\n"
+        )
+
+    if active:
+        rows = []
+        for c in active:
+            rows.append([
+                f"**{c['ticker']}**",
+                c["name"][:16],
+                f"{c['score']:.1f}" if c["score"] is not None else "—",
+                _fmt(c["change_1d"]),
+                _fmt(c.get("from_high")),
+                f"{c['rsi']:.0f}" if c["rsi"] is not None else "—",
+                c["buy_label"],
+                c["buy_size"],
+            ])
+        lines.append(_table(
+            ["代码", "名称", "评分", "1日", "距高点", "RSI", "建议", "用多少钱"],
+            rows,
+        ))
+        for c in active[:6]:
+            lines.append(f"- **{c['ticker']}**：{c['buy_note']}")
+        lines.append("")
+    else:
+        lines.append("今天没有过线的买入候选。不是空仓信号，只是没有同时满足评分和价格折扣。\n")
+
+    if waiting:
+        lines.append("### 候补（等回踩再买）\n")
+        wait_rows = []
+        for c in waiting:
+            wait_rows.append([
+                f"**{c['ticker']}**",
+                f"{c['score']:.1f}" if c["score"] is not None else "—",
+                _fmt(c["change_1d"]),
+                _fmt(c.get("from_high")),
+                c["buy_note"][:40],
+            ])
+        lines.append(_table(
+            ["代码", "评分", "1日", "距高点", "等什么"],
+            wait_rows,
+        ))
+    lines.append("---\n")
+    return "\n".join(lines)
 
 
 def build_options_desk_section(ranked, macro_result=None, held=None, today=None):
     """Markdown: today's options stance + compact tickets."""
-    cards, event = annotate(ranked, held=held, today=today)
+    cards, event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
     vix = ((macro_result or {}).get("trend") or {}).get("vix")
     vix_s = f"{float(vix):.1f}" if isinstance(vix, (int, float)) else "—"
     nxt = ""
@@ -503,12 +733,13 @@ def build_options_desk_section(ranked, macro_result=None, held=None, today=None)
         "今日规则：",
         "- **不买** 短期 call 去追已经大涨的名字。",
         "- **不卖** 短到期 put 去赌非农 / CPI / FOMC 当天的反弹。",
-        "- 已持有的超买股：用 covered call 做软止盈，详细梯子见下方 Covered Call 栏。",
-        "- 质量回撤且未持有：现金担保 put 的梯子见下方 Sell Put 雷达。",
+        "- 卖 call 限已有足额股票且愿意卖股；强趋势不自动覆盖，详见统一评分。",
+        "- 卖 put 需要方向、两档 IV/RV 与合约筛选共同通过，大跌本身不是理由。",
         "- 3 倍 ETF（如 SOXL）：股票和期权都不跟。\n",
     ]
 
-    if sell_calls or sell_puts or no_chase or dips:
+    buys = [c for c in tickets if c.get("buy_action") in ("buy", "scale_in", "add_held")]
+    if tickets:
         rows = []
         for c in tickets[:12]:
             rows.append([
@@ -530,9 +761,10 @@ def build_options_desk_section(ranked, macro_result=None, held=None, today=None)
     return "\n".join(lines)
 
 
-def build_config_watch_section(ranked, held=None, today=None, extra_core=None):
+def build_config_watch_section(ranked, held=None, today=None, extra_core=None,
+                               macro_result=None):
     """Markdown: CORE_WATCH always, plus notable rest-of-universe names."""
-    cards, _event = annotate(ranked, held=held, today=today)
+    cards, _event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
     extra_core = extra_core or held_tickers()
     core, extras = config_watch_cards(cards, extra_core=extra_core)
 
@@ -540,15 +772,18 @@ def build_config_watch_section(ranked, held=None, today=None, extra_core=None):
         "## Config 关注名单\n",
         "每天固定看 `CORE_WATCH`（config 里的核心池：Mag7、芯片龙头、个人底仓）。"
         "其余 universe 名字只在单日 |涨跌| ≥ 3% 或 5 日 |涨跌| ≥ 6% 时出现。"
-        "动作是「加 / 拿 / 减 / 不追」，不是自动下单。\n",
+        "「股票」看涨跌结构，「买入」是能不能加仓。不是自动下单。\n",
     ]
-    headers = ["代码", "名称", "1日", "5日", "RSI", "评分", "持仓", "股票", "期权"]
+    headers = ["代码", "名称", "1日", "5日", "RSI", "评分", "持仓", "涨跌", "买入", "期权"]
     if core:
         lines.append("### 核心池\n")
         lines.append(_table(headers, [_row_for_watch(c) for c in core]))
-        notes = [c for c in core if c["stock_action"] != "hold_watch"]
+        notes = [
+            c for c in core
+            if c["stock_action"] != "hold_watch" or c.get("buy_action") not in (None, "no_buy")
+        ]
         for c in notes[:6]:
-            lines.append(f"- **{c['ticker']}**：{c['stock_note']}")
+            lines.append(f"- **{c['ticker']}**：{c.get('buy_note') or c['stock_note']}")
         if notes:
             lines.append("")
     if extras:
@@ -560,9 +795,9 @@ def build_config_watch_section(ranked, held=None, today=None, extra_core=None):
     return "\n".join(lines)
 
 
-def build_top_movers_section(ranked, held=None, today=None):
+def build_top_movers_section(ranked, held=None, today=None, macro_result=None):
     """Markdown: top winners / losers with chase-vs-dip labels."""
-    cards, _event = annotate(ranked, held=held, today=today)
+    cards, _event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
     up, down = top_movers(cards)
 
     def mover_rows(group):
@@ -573,18 +808,19 @@ def build_top_movers_section(ranked, held=None, today=None):
                 c["name"][:16],
                 _fmt(c["change_1d"]),
                 _fmt(c["change_5d"]),
-                f"{c['score']:.0f}" if c["score"] is not None else "—",
+                f"{c['score']:.1f}" if c["score"] is not None else "—",
                 c["stock_label"],
+                c.get("buy_label") or "—",
                 c["options_label"],
             ])
         return rows
 
-    headers = ["代码", "名称", "1日", "5日", "评分", "跟风/抄底", "期权"]
+    headers = ["代码", "名称", "1日", "5日", "评分", "跟风/抄底", "买入", "期权"]
     lines = [
         "## Top Movers — 跟风还是抄底\n",
         "按当日涨跌幅取涨幅最大和跌幅最大的各 8 只（来自当天分析过的 config 股票）。"
-        "**默认不跟风。** 大涨且 RSI 高 = 不追；大跌且评分 ≥ 60 = 可分批；"
-        "大跌且评分弱 = 不接刀。跟风买 call 是最差的期权用法。\n",
+        "**默认不跟风。** 大涨且 RSI 高 = 不追；质量回撤可以进「建议买入」栏。"
+        "跟风买 call 仍是最差的期权用法。\n",
     ]
     if up:
         lines.append("### 今日涨幅榜\n")
@@ -600,12 +836,32 @@ def build_top_movers_section(ranked, held=None, today=None):
 
 def email_watch_lines(ranked, held=None, today=None, macro_result=None):
     """Short plaintext blocks for the daily email summary."""
-    cards, event = annotate(ranked, held=held, today=today)
+    cards, event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
     lines = [
+        "=== 建议买入 ===",
+    ]
+    active = buy_picks(cards, include_watch=False, n=6)
+    if active:
+        for c in active:
+            lines.append(
+                f"  {c['ticker']:<6} {c['buy_label']}  {_fmt(c['change_1d']):>7}  "
+                f"评分 {c['score']:.1f}  {c['buy_size']}"
+            )
+    else:
+        lines.append("  今日无过线买入候选")
+    waiting = [c for c in buy_picks(cards, include_watch=True, n=12)
+               if c["buy_action"] == "watch_buy"][:4]
+    if waiting:
+        lines.append("候补:")
+        for c in waiting:
+            lines.append(f"  {c['ticker']:<6} {c['buy_label']}  评分 {c['score']:.1f}")
+
+    lines.extend([
+        "",
         "=== OPTIONS DESK ===",
         f"立场: {event['label']}",
         event["reason"],
-    ]
+    ])
     tickets = action_tickets(cards)[:8]
     if tickets:
         lines.append("票据:")
@@ -619,13 +875,17 @@ def email_watch_lines(ranked, held=None, today=None, macro_result=None):
 
     extra_core = held if held is not None else held_tickers()
     core, extras = config_watch_cards(cards, extra_core=extra_core)
-    highlights = [c for c in core + extras if c["stock_action"] != "hold_watch"][:8]
+    highlights = [
+        c for c in core + extras
+        if c["stock_action"] != "hold_watch" or c.get("buy_action") not in (None, "no_buy")
+    ][:8]
     lines.append("")
     lines.append("=== CONFIG 关注（需动作） ===")
     if highlights:
         for c in highlights:
             lines.append(
-                f"  {c['ticker']:<6} {_fmt(c['change_1d']):>7}  {c['stock_label']}"
+                f"  {c['ticker']:<6} {_fmt(c['change_1d']):>7}  "
+                f"{c.get('buy_label') or c['stock_label']}"
             )
     else:
         lines.append("  核心池今日无需动作")

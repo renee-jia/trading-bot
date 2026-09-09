@@ -15,7 +15,8 @@ from pathlib import Path
 
 
 def generate_report(scored_results, output_dir="reports", macro_result=None,
-                    discovery_result=None):
+                    discovery_result=None, options_decisions=None,
+                    sell_put_plan=None):
     """
     Generate a comprehensive Markdown recommendation report.
 
@@ -25,6 +26,8 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
         output_dir: directory to write report to
         macro_result: dict from macro_analyzer.analyze_macro() (optional)
         discovery_result: dict from stock_discovery.discover_stocks() (optional)
+        sell_put_plan: dict from ai_sell_put_plan.build_plan() (optional; built
+            here when omitted so the AI sell-put desk always renders)
 
     Returns:
         (report_path, report_content) tuple
@@ -35,18 +38,47 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
     report_path = f"{output_dir}/recommendations_{timestamp}.md"
 
     # Sort by score
-    ranked = sorted(scored_results, key=lambda x: x["score_result"]["score"], reverse=True)
+    import stock_signals
+    ranked = sorted(stock_signals.add_peer_ranks(scored_results),
+                    key=lambda x: x["score_result"]["score"], reverse=True)
 
+    import json
+    import options_research
+    try:
+        options_section, snapshots = options_research.build_section(ranked, macro_result)
+    except Exception:
+        options_section = "## Options Research — 期权链信号\n\n数据不可用，本次跳过期权研究。\n"
+        snapshots = []
+    snapshot_path = Path(output_dir) / f"options_research_{timestamp}.json"
+    snapshot_path.write_text(json.dumps(snapshots, ensure_ascii=False, indent=2, allow_nan=False))
+    decisions = {r['ticker']:r['decision'] for r in snapshots if 'decision' in r}
+    if options_decisions is not None:
+        options_decisions.update(decisions)
+    ranked = [{**r, 'options_decision':decisions.get(r['ticker'],
+               {'status':'wait','action':'wait','reasons':['本次期权链未评估或数据不可用']})} for r in ranked]
+    if sell_put_plan is None:
+        try:
+            import ai_sell_put_plan
+            sell_put_plan = ai_sell_put_plan.build_plan(ranked, macro_result=macro_result)
+        except Exception as e:
+            sell_put_plan = {"error": str(e)}
+    if sell_put_plan and not sell_put_plan.get("error"):
+        plan_path = Path(output_dir) / f"ai_sell_put_plan_{timestamp}.json"
+        plan_path.write_text(json.dumps(sell_put_plan, ensure_ascii=False, indent=2, default=str))
     report = _build_report(ranked, macro_result=macro_result,
-                          discovery_result=discovery_result)
+                          discovery_result=discovery_result,
+                          options_research_section=options_section,
+                          sell_put_plan=sell_put_plan)
 
-    with open(report_path, "w") as f:
-        f.write(report)
+    Path(report_path).write_text(report, encoding="utf-8")
+    from report_format import render_html
+    Path(report_path).with_suffix(".html").write_text(render_html(report), encoding="utf-8")
 
     return report_path, report
 
 
-def _build_report(ranked, macro_result=None, discovery_result=None):
+def _build_report(ranked, macro_result=None, discovery_result=None, options_research_section="",
+                  sell_put_plan=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total = len(ranked)
 
@@ -56,6 +88,8 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
     holds = [r for r in ranked if r["score_result"]["recommendation"] == "Hold"]
     reduces = [r for r in ranked if r["score_result"]["recommendation"] == "Reduce"]
     avoids = [r for r in ranked if r["score_result"]["recommendation"] == "Avoid"]
+
+    score_research = _build_score_research(ranked)
 
     # General: current trend + 1w/1m/6m outlook + add-vs-sell stance
     trend_section = _build_stock_trend_section(ranked, macro_result)
@@ -72,62 +106,63 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
     try:
         import daily_watch
         macro_desk = daily_watch.build_macro_desk_section(macro_result)
+        buy_section = daily_watch.build_buy_section(
+            ranked, macro_result=macro_result
+        )
         options_desk = daily_watch.build_options_desk_section(
             ranked, macro_result=macro_result
         )
-        config_watch = daily_watch.build_config_watch_section(ranked)
-        movers_section = daily_watch.build_top_movers_section(ranked)
+        config_watch = daily_watch.build_config_watch_section(
+            ranked, macro_result=macro_result
+        )
+        movers_section = daily_watch.build_top_movers_section(
+            ranked, macro_result=macro_result
+        )
     except Exception as e:
         macro_desk = f"## Macro Desk — 今日宏观\n\n*Section failed: {e}*\n\n---\n"
+        buy_section = f"## 今日建议买入\n\n*Section failed: {e}*\n\n---\n"
         options_desk = f"## Options Desk — 今日期权操作\n\n*Section failed: {e}*\n\n---\n"
         config_watch = ""
         movers_section = ""
 
+    decisions = {r['ticker']:r['options_decision'] for r in ranked if r.get('options_decision') is not None}
+
     # Covered-call advisor for held shares (CC_POSITIONS env; empty when unset)
     try:
         import covered_call_advisor
-        cc_section = covered_call_advisor.build_covered_call_section()
+        cc_section = covered_call_advisor.build_covered_call_section(decisions=decisions)
     except Exception as e:
         cc_section = f"## Covered Call Advisor\n\n*Section failed: {e}*\n\n---\n"
 
     # Sell-put radar: scan the whole universe for panic-drop premium setups
     try:
         import sell_put_advisor
-        sp_section = sell_put_advisor.build_sell_put_section(ranked)
+        sp_section = sell_put_advisor.build_sell_put_section(ranked, decisions=decisions)
     except Exception as e:
         sp_section = f"## Sell Put 雷达\n\n*Section failed: {e}*\n\n---\n"
 
-    report = f"""# Stock Recommendations Report
+    # AI 持有标的 sell-put plan: fixed AI watch list, answered every day
+    try:
+        import ai_sell_put_plan
+        if sell_put_plan is None:
+            sell_put_plan = ai_sell_put_plan.build_plan(ranked, macro_result=macro_result)
+        if sell_put_plan.get("error"):
+            raise RuntimeError(sell_put_plan["error"])
+        ai_put_section = ai_sell_put_plan.build_section(sell_put_plan)
+    except Exception as e:
+        ai_put_section = f"## AI 持有标的 Sell Put 方案\n\n*Section failed: {e}*\n\n---\n"
 
-**Generated:** {now}
-**Strategy:** Macro Buy-and-Hold (weeks+ holding period)
-**Stocks Analyzed:** {total}
+    report = f"""# Trading Bot · 每日策略报告
 
----
+**生成时间：** {now}（本机时区） · **分析股票：** {total} 只
 
-{trend_section}
+**策略周期：** 数周以上持有；期权另按期限、报价与事件条件筛选。
 
-{macro_desk}
-
-{options_desk}
-
-{config_watch}
-
-{movers_section}
-
-{cc_section}
-
-{sp_section}
-
-{macro_section}
-
-{alpaca_section}
-
-{ai_semi_section}
+> 阅读顺序：先看 General 的风险预算与 $400k 现金计划，再看个股入场条件和期权候选。股票评级是综合评分，候选研究分和期权适配分都不是胜率。
 
 ---
 
-## Executive Summary
+## Executive Summary — 今日概览
 
 | Category | Count | Tickers |
 |----------|-------|---------|
@@ -139,15 +174,45 @@ def _build_report(ranked, macro_result=None, discovery_result=None):
 
 ---
 
+{trend_section}
+
+{macro_desk}
+
+{buy_section}
+
+{score_research}
+
+{options_desk}
+
+{options_research_section}
+
+{config_watch}
+
+{movers_section}
+
+{cc_section}
+
+{sp_section}
+
+{ai_put_section}
+
+{macro_section}
+
+{alpaca_section}
+
+{ai_semi_section}
+
+---
+
 ## Scoring Methodology
 
 Each stock is evaluated across four dimensions:
 
 | Dimension | Weight | Description |
 |-----------|--------|-------------|
-| Technical | 30% | Trend (MA crossovers, ADX), momentum (RSI, MACD), volume, volatility |
-| Trend | 25% | Relative strength vs SPY, market regime, long-term momentum |
-| Alpha | 30% | 30 quantitative alpha factors (momentum, mean-reversion, volume) |
+| Technical | 35% | Trend (MA crossovers, ADX), momentum (RSI, MACD), volume, volatility |
+| Trend | 30% | Relative strength vs SPY, market regime, long-term momentum |
+| Alpha | 20% | 30 quantitative alpha factors (momentum, mean-reversion, volume) |
 | Sentiment | 15% | News headline sentiment, recency-weighted |
 
 **Score Scale:** 0-100 (75+ = Strong Buy, 60-74 = Buy, 45-59 = Hold, 30-44 = Reduce, <30 = Avoid)
@@ -167,7 +232,9 @@ Each stock is evaluated across four dimensions:
 
 ---
 
-## Top Picks
+## Top Picks — 评分前列
+
+以下按综合评分排序；是否适合今天买入，还需看上方入场条件。
 
 """
 
@@ -181,7 +248,7 @@ Each stock is evaluated across four dimensions:
         name = r.get("name", r["ticker"])[:20]
         report += (
             f"| {i} | **{r['ticker']}** | {name} "
-            f"| {sr['score']:.0f} | {sr['grade']} "
+            f"| {sr['score']:.1f} | {sr['grade']} "
             f"| {sr['recommendation']} "
             f"| {sr['confidence']*100:.0f}% "
             f"| {sr.get('regime', '-')} |\n"
@@ -201,7 +268,7 @@ Each stock is evaluated across four dimensions:
             f"| {c['trend']['score']:.0f} "
             f"| {c['alpha']['score']:.0f} "
             f"| {c['sentiment']['score']:.0f} "
-            f"| **{sr['score']:.0f}** |\n"
+            f"| **{sr['score']:.1f}** |\n"
         )
 
     # Price performance for top picks
@@ -244,7 +311,7 @@ Each stock is evaluated across four dimensions:
 
         report += f"### {r['ticker']} - {name}\n\n"
         report += f"**Sector:** {sector} | "
-        report += f"**Score:** {sr['score']:.0f}/100 ({sr['grade']}) | "
+        report += f"**Score:** {sr['score']:.1f}/100 ({sr['grade']}) | "
         report += f"**Recommendation:** {sr['recommendation']} | "
         report += f"**Confidence:** {sr['confidence']*100:.0f}%\n\n"
 
@@ -273,44 +340,7 @@ Each stock is evaluated across four dimensions:
                 report += f" | **RSI:** {ind.get('rsi', 0):.0f}"
             report += "\n"
 
-        # Sentiment news summary
-        sent_detail = sr.get("sentiment_detail", {})
-        if sent_detail.get("reasoning"):
-            report += f"\n**Sentiment Analysis** ({sent_detail.get('method', 'keyword').title()}):\n"
-            report += f"{sent_detail['reasoning']}\n"
-        if sent_detail.get("key_themes"):
-            report += "\n**Key Themes:**\n"
-            for theme in sent_detail["key_themes"]:
-                report += f"- {theme}\n"
-        if sent_detail.get("risk_flags"):
-            report += "\n**Risk Flags:**\n"
-            for flag in sent_detail["risk_flags"]:
-                report += f"- {flag}\n"
-
-        # Original news sources
-        news_data = r.get("news_data", [])
-        if news_data:
-            report += "\n**Recent News:**\n"
-            for article in news_data[:10]:
-                title = article.get("title", "")
-                publisher = article.get("publisher", "")
-                link = article.get("link", "")
-                pub_time = article.get("publish_time")
-                age_str = ""
-                if pub_time:
-                    age_days = max(0, (datetime.now() - pub_time).total_seconds() / 86400)
-                    if age_days < 1:
-                        age_str = "today"
-                    elif age_days < 2:
-                        age_str = "1d ago"
-                    else:
-                        age_str = f"{age_days:.0f}d ago"
-                pub_str = f" — {publisher}" if publisher else ""
-                age_tag = f" [{age_str}]" if age_str else ""
-                if link:
-                    report += f"- [{title}]({link}){pub_str}{age_tag}\n"
-                else:
-                    report += f"- {title}{pub_str}{age_tag}\n"
+        report += _compact_stock_news(r)
 
         # Trend outlook from Claude synthesis
         trend_detail = sr.get("trend_detail", {})
@@ -348,7 +378,8 @@ Each stock is evaluated across four dimensions:
 
 *Generated by Trading Bot Recommendation Engine*
 """
-    return report
+    from report_format import format_markdown
+    return format_markdown(report)
 
 
 def _build_macro_section(macro_result):
@@ -480,18 +511,19 @@ def _build_bottom_20(ranked):
     bottom = ranked[-20:] if len(ranked) >= 20 else ranked
     bottom = list(reversed(bottom))  # Worst first
 
-    section = "\n---\n\n## Bottom 20 — Sell/Avoid\n\n"
-    section += "| Rank | Ticker | Name | Score | Grade | Recommendation | Key Issue |\n"
+    section = "\n---\n\n## 评分后列 — 相对排名\n\n"
+    section += "股票池中的相对后列，可能仍含 Buy/Hold；减仓与回避以 Recommendation 列为准。\n\n"
+    section += "| Rank | Ticker | Name | Score | Grade | Recommendation | 主要因素 |\n"
     section += "|------|--------|------|-------|-------|----------------|-----------|\n"
 
     for i, r in enumerate(bottom, 1):
         sr = r["score_result"]
         name = r.get("name", r["ticker"])[:20]
         reasons = sr.get("reasoning", [])
-        issue = reasons[0][:60] if reasons else "Weak multi-factor profile"
+        issue = reasons[0][:60] if reasons else "暂无原因摘要"
         section += (
             f"| {i} | **{r['ticker']}** | {name} "
-            f"| {sr['score']:.0f} | {sr['grade']} "
+            f"| {sr['score']:.1f} | {sr['grade']} "
             f"| {sr['recommendation']} "
             f"| {issue} |\n"
         )
@@ -510,7 +542,7 @@ def _build_bottom_20(ranked):
             f"| {c['trend']['score']:.0f} "
             f"| {c['alpha']['score']:.0f} "
             f"| {c['sentiment']['score']:.0f} "
-            f"| **{sr['score']:.0f}** |\n"
+            f"| **{sr['score']:.1f}** |\n"
         )
 
     return section
@@ -553,6 +585,7 @@ def _build_portfolio_weights(ranked, macro_result=None):
     stocks = [{"ticker": r["ticker"], "score": r["score_result"]["score"],
                "mom": mom_data[r["ticker"]]} for r in ranked]
     weights_pct, cash_pct = strategy.compute_target_weights(stocks, macro_score=macro_score)
+    cash_label = f"{cash_pct*100:.1f}% (includes capital left unallocated by position caps)"
     # Expand to all tickers (0 for excluded) for the display tables below.
     final_weights = {r["ticker"]: weights_pct.get(r["ticker"], 0.0) for r in ranked}
 
@@ -573,6 +606,7 @@ def _build_portfolio_weights(ranked, macro_result=None):
     section += "Top 10 stocks selected by **momentum rank** (3-month + 1-month composite). "
     section += "Capital weighted toward the strongest momentum names with score as a minor quality tilt. "
     section += "Stocks outside top 10 are excluded (0% weight).\n\n"
+    section += "This allocation assumes a fresh portfolio; live trading also applies its existing-holding rank buffer.\n\n"
 
     # Top holdings table (the ones that get allocation)
     allocated = [t for t in sorted_stocks if final_weights[t] > 0.1]
@@ -595,7 +629,7 @@ def _build_portfolio_weights(ranked, macro_result=None):
         section += (
             f"| {i} | **{t}** | {name} "
             f"| {w:.1f}% "
-            f"| {sr['score']:.0f} "
+            f"| {sr['score']:.1f} "
             f"| {m1:+.1f}% "
             f"| {m3:+.1f}% "
             f"| #{mom_rank} |\n"
@@ -617,9 +651,9 @@ def _build_portfolio_weights(ranked, macro_result=None):
             name = r.get("name", t)[:18]
             section += (
                 f"| {t} | {name} "
-                f"| {sr['score']:.0f} "
+                f"| {sr['score']:.1f} "
                 f"| {sr['recommendation']} "
-                f"| Outside top {top_n} by score |\n"
+                f"| Outside top {top_n} by momentum |\n"
             )
         if len(not_allocated) > 30:
             section += f"\n*...and {len(not_allocated) - 30} more excluded stocks*\n"
@@ -876,7 +910,7 @@ def _ai_semi_row(r, sub_sector):
     rec = rec_map.get(sr["recommendation"], sr["recommendation"])
     return (
         f"| **{r['ticker']}** | {name} | {sub_sector} "
-        f"| {sr['score']:.0f} | {m1_str} | {m3_str} | {rec} |\n"
+        f"| {sr['score']:.1f} | {m1_str} | {m3_str} | {rec} |\n"
     )
 
 
@@ -925,13 +959,13 @@ def _build_stock_trend_section(ranked, macro_result=None):
         f"{trend.get('structure_label', '')}\n\n"
     )
     section += (
-        f"标普距近一年高点 {spy_dd} | 纳指 {qqq_dd} | 半导体 SMH {smh_dd} | "
+        f"标普（SPY）距近一年高点 {spy_dd} | 纳指 {qqq_dd} | 半导体 SMH {smh_dd} | "
         f"VIX {vix_s} | 标普相对 200 日均线：{sma200}\n\n"
     )
     if outlook.get("current_trend"):
         section += f"{outlook['current_trend']}\n\n"
 
-    section += f"**仓位建议：{stance_label}**\n\n"
+    section += f"**既有持仓的仓位建议：{stance_label}**\n\n"
     if outlook.get("sizing_guidance"):
         section += f"{outlook['sizing_guidance']}\n\n"
 
@@ -945,8 +979,13 @@ def _build_stock_trend_section(ranked, macro_result=None):
     section += (
         "对照：尽量卖出 = 降低风险预算、停止新开仓；"
         "大量抄底 = 只在指数已有双位数回撤且波动率恐慌时才考虑。"
-        "普通回撤默认分批，不把计划资金一次打完。\n"
+        "普通回撤默认分批，不把计划资金一次打完。"
+        "个股买卖看下方「今日建议买入」——宏观持有不等于每只都不能买。\n"
     )
+
+    import cash_entry_plan
+    cash_plan = (macro_result or {}).get('cash_entry_plan') or cash_entry_plan.from_market_data(market_data)
+    section += "\n" + cash_entry_plan.render(cash_plan)
 
     # Keep a compact breadth read from the scored universe
     if ranked:
@@ -986,3 +1025,60 @@ def _ticker_list(items, max_show=10):
     if len(items) > max_show:
         result += f", +{len(items) - max_show} more"
     return result if result else "-"
+
+
+def _compact_stock_news(row):
+    """Keep research input intact; cap only the report presentation."""
+    detail = row.get("score_result", {}).get("sentiment_detail") or {}
+    def short(value, limit):
+        value = " ".join(str(value).split())
+        return value if len(value) <= limit else value[:limit-1] + "…"
+    lines = []
+    themes = detail.get("key_themes") or []
+    summary = "；".join(str(t) for t in themes[:2]) or detail.get("reasoning")
+    if summary:
+        lines.append("**News Brief:** " + short(summary, 180))
+    flags = detail.get("risk_flags") or []
+    if flags:
+        lines.append("**News Risks:** " + short("；".join(str(f) for f in flags[:2]), 180))
+    seen_titles, seen_links = set(), set()
+    sources = []
+    for article in row.get("news_data") or []:
+        title = " ".join(str(article.get("title") or "").split())
+        link = article.get("link") or ""
+        key = title.casefold()
+        if not title or key in seen_titles or (link and link in seen_links):
+            continue
+        seen_titles.add(key)
+        seen_links.add(link)
+        title = short(title, 120)
+        sources.append(f"- [{title}]({link})" if link else f"- {title}")
+        if len(sources) == 2:
+            break
+    if sources:
+        lines.append("**News Sources:**\n" + "\n".join(sources))
+    return "\n" + "\n".join(lines) + "\n" if lines else ""
+
+
+def _build_score_research(ranked):
+    rows = [r for r in ranked if r['score_result'].get('research_signals', {}).get('signals')]
+    if not rows:
+        return ""
+    labels = {'residual_strength':'市场调整强度', 'downside_resilience':'抗跌表现',
+              'close_location_volume':'量价收盘位置'}
+    def fmt(x):
+        return '—' if x is None else f'{x:.1f}'
+    lines = ['## 个股评分差异 — 绝对评分与同池比较\n',
+             '绝对评分决定评级；同池百分位仅表示本次股票池内的相对位置（至少10只），不是胜率。',
+             '候选模型最多调整 ±12 分；历史验证未显示稳定排序改善，因此候选分不改变实际评级或下单。缺失项不加分。\n',
+             '| 股票 | 实际分 | 候选分（未启用） | 候选调整 | 同池百分位 | 市场调整强度 | 抗跌表现 | 量价收盘位置 |',
+             '|---|---|---|---|---|---|---|---|']
+    for row in rows[:20]:
+        sr = row['score_result']
+        signals = sr['research_signals']['signals']
+        vals = ' | '.join(fmt(signals.get(k, {}).get('score')) for k in labels)
+        lines.append(f"| {row['ticker']} | {sr['score']:.1f} | {fmt(sr.get('research_score'))} | "
+                     f"{sr.get('research_adjustment',0):+.1f} | {fmt(sr.get('peer_percentile'))} | {vals} |")
+    lines += ['', '信号列也是0–100分：市场调整强度剔除估计 beta 的影响；抗跌表现观察市场下跌日；量价收盘位置不是实际资金流入。',
+              '同池百分位随股票池改变，不能跨池直接比较；弱市的第一名也可能仍应回避。\n', '---\n']
+    return '\n'.join(lines)

@@ -89,7 +89,11 @@ def discover_stocks(current_universe, scored_results=None, macro_result=None):
 def _claude_discover(current_tickers, macro_result, api_key):
     """Ask Claude to suggest stocks to add/remove."""
     import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    _ws = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        default_headers={"anthropic-workspace-id": _ws} if _ws else None,
+    )
 
     now = datetime.now()
     universe_str = ", ".join(current_tickers)

@@ -53,13 +53,18 @@ HIGH_IMPACT_MACRO = (
     (date(2026, 9, 11), "CPI"),
     (date(2026, 9, 16), "FOMC"),
     (date(2026, 9, 30), "PCE"),
+    (date(2026, 10, 2), "NFP"),
     (date(2026, 10, 14), "CPI"),
     (date(2026, 10, 28), "FOMC"),
     (date(2026, 11, 6), "NFP"),
-    (date(2026, 11, 12), "CPI"),
-    (date(2026, 12, 9), "CPI"),
-    (date(2026, 12, 16), "FOMC"),
+    (date(2026, 11, 10), "CPI"),
+    (date(2026, 12, 4), "NFP"),
+    (date(2026, 12, 10), "CPI"),
+    (date(2026, 12, 9), "FOMC"),
 )
+# Fed/BLS/BEA checked 2026-09-08. PCE coverage verified only through September.
+MACRO_COVERAGE_START = date(2026, 9, 1)
+MACRO_COVERAGE_END = date(2026, 9, 30)
 FOMC_BUFFER_DAYS = 3
 
 
@@ -171,10 +176,14 @@ def find_drop_candidates(ranked, exclude=None):
     return candidates[:MAX_CANDIDATES], skipped
 
 
-def analyze_put_ladder(ticker, rate):
-    """Cash-secured put recommendation for one dropped ticker."""
-    t = yf.Ticker(ticker)
-    hist = t.history(period="1y")
+def analyze_put_ladder(ticker, rate, t=None, hist=None, today=None):
+    """Cash-secured put recommendation for one ticker.
+
+    `t` / `hist` let callers reuse an already-fetched Ticker and 1y history
+    (ai_sell_put_plan does this so each name is fetched once).
+    """
+    t = t or yf.Ticker(ticker)
+    hist = t.history(period="1y") if hist is None else hist
     closes = hist["Close"]
     spot = float(closes.iloc[-1])
     pct_from_high = (spot / float(closes.max()) - 1) * 100
@@ -188,7 +197,7 @@ def analyze_put_ladder(ticker, rate):
 
     earnings = _next_earnings(t)
     safe_exps = filter_macro_safe_expiries(t.options)
-    expiry, dte, status = _pick_expiry(safe_exps, earnings)
+    expiry, dte, status = _pick_expiry(safe_exps, earnings, today=today)
 
     result = {
         "ticker": ticker,
@@ -312,36 +321,14 @@ def _format_candidate(c, r):
     return "\n".join(lines)
 
 
-def build_sell_put_section(ranked, exclude=None):
+def build_sell_put_section(ranked, exclude=None, decisions=None):
     """Markdown section scanning the analyzed universe for sell-put setups."""
-    if exclude is None:
-        exclude = held_tickers()
-    candidates, skipped = find_drop_candidates(ranked, exclude=exclude)
-
-    header = [
-        "## Sell Put 雷达（大跌收租机会）\n",
-        f"*扫描规则：5日 ≤ {DROP_5D:.0f}% / 单日 ≤ {DROP_1D:.0f}%（5日仍 > +{RALLY_5D:.0f}% 则忽略）/ "
-        f"1月 ≤ {DROP_1M:.0f}% 且 RSI < {RSI_OVERSOLD:.0f}。"
-        "已持有的股票不推荐；FOMC 后 3 个自然日内到期的合约跳过"
-        "（CPI/非农/PCE 当天到期也跳过）。收租为主，被行权则以折价接股。*\n",
-    ]
-    if skipped:
-        skip_txt = "；".join(f"{s['ticker']}（{s['reason']}）" for s in skipped[:8])
-        header.append(f"*已排除：{skip_txt}*\n")
-    if not candidates:
-        header.append("今日 list 中无股票触发大跌条件，无 sell put 候选。\n")
-        header.append("---\n")
-        return "\n".join(header)
-
-    rate = _risk_free_rate()
-    parts = header
-    for c in candidates:
-        try:
-            parts.append(_format_candidate(c, analyze_put_ladder(c["ticker"], rate)))
-        except Exception as e:
-            parts.append(f"### {c['ticker']}\n\n*期权数据获取失败：{e}*\n")
-    parts.append("---\n")
-    return "\n".join(parts)
+    if decisions is not None:
+        from options_decision import render_tickets
+        text = render_tickets(decisions, {'cash_secured_put'})
+        return "## Cash-secured Put — 统一评分候选\n\n" + (text or "没有通过统一评分的现金担保 put 候选。") + "\n\n---\n"
+    return ("## Cash-secured Put — 等待完整评分\n\n"
+            "大跌不足以证明值得卖 put；缺少统一评分，本栏不单独输出开仓或滚动指令。\n\n---\n")
 
 
 if __name__ == "__main__":

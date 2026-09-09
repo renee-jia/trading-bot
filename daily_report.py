@@ -86,10 +86,21 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
         except Exception as e:
             print(f"Stock discovery failed: {e}")
 
+    # AI 持有标的 sell-put plan: built once, shared by the report and the email
+    sell_put_plan = None
+    try:
+        import ai_sell_put_plan
+        sell_put_plan = ai_sell_put_plan.build_plan(results, macro_result=macro_result)
+    except Exception as e:
+        print(f"AI sell-put plan failed: {e}")
+
     # Generate report (after trading, so portfolio section shows post-trade state)
+    options_decisions = {}
     report_path, _ = report_generator.generate_report(
         results, output_dir="reports", macro_result=macro_result,
         discovery_result=discovery_result,
+        options_decisions=options_decisions,
+        sell_put_plan=sell_put_plan,
     )
     print(f"\nReport saved: {report_path}")
 
@@ -132,11 +143,18 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
         )
         summary_lines.append("")
         summary_lines.extend(
-            daily_watch.email_watch_lines(results, macro_result=macro_result)
+            daily_watch.email_watch_lines(
+                [{**r, 'options_decision':options_decisions.get(r['ticker'],
+                  {'status':'wait','action':'wait','reasons':['期权链未评估或数据不可用']})} for r in results],
+                macro_result=macro_result)
         )
         summary_lines.append("")
     except Exception as e:
         summary_lines.append(f"=== MACRO / OPTIONS / WATCH (failed: {e}) ===")
+        summary_lines.append("")
+
+    if sell_put_plan and not sell_put_plan.get("error"):
+        summary_lines.extend(ai_sell_put_plan.email_lines(sell_put_plan))
         summary_lines.append("")
 
     summary_lines.extend([

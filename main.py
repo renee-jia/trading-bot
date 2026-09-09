@@ -70,11 +70,15 @@ def analyze_stock(ticker, price_data, benchmark_data, hourly_data=None,
     # Macro trend analysis (daily) — macro_score from macro_analyzer replaces per-stock Claude calls
     trend_result = trend_analyzer.analyze(price_data, benchmark_data, macro_score=macro_score)
 
+    import stock_signals
+    research_result = stock_signals.analyze(price_data, benchmark_data)
+
     # Combine into final score
     score_result = scorer.score_stock(
         tech_result, sent_result, trend_result,
         alpha_score=alpha_score,
         weights=ANALYZER_WEIGHTS,
+        research_result=research_result,
     )
 
     # Attach sentiment and trend details for report generation
@@ -92,45 +96,9 @@ def analyze_stock(ticker, price_data, benchmark_data, hourly_data=None,
 
 
 def compute_alpha_score(price_data):
-    """
-    Compute alpha factor score from quantitative factors.
-    Uses the existing custom_alphas module.
-    """
-    try:
-        from custom_alphas import get_custom_alphas
-        import numpy as np
-        import pandas as pd
-
-        alpha_df = get_custom_alphas(price_data)
-        if alpha_df is None or alpha_df.empty:
-            return None
-
-        # Normalize each alpha to 0-1 range
-        normalized = pd.DataFrame(index=alpha_df.index)
-        for col in alpha_df.columns:
-            series = alpha_df[col].dropna()
-            if len(series) == 0:
-                continue
-            min_val = series.quantile(0.01)
-            max_val = series.quantile(0.99)
-            if max_val - min_val > 1e-8:
-                norm = (alpha_df[col] - min_val) / (max_val - min_val)
-                normalized[col] = norm.clip(0, 1)
-            else:
-                normalized[col] = 0.5
-
-        if normalized.empty:
-            return None
-
-        # Use the latest row's mean as the composite alpha score
-        latest = normalized.iloc[-1]
-        valid = latest.dropna()
-        if len(valid) == 0:
-            return None
-
-        return float(valid.mean())
-    except Exception:
-        return None
+    """Shared alpha normalization with the historical and allocation harness."""
+    import strategy
+    return strategy.compute_alpha_score(price_data)
 
 
 def _fetch_stock_data(ticker, skip_news=False):
@@ -267,7 +235,8 @@ def run_analysis(tickers, skip_news=False, skip_alpha=False):
               f"Alpha: {comp['alpha']['score']:.0f} | "
               f"Sent: {comp['sentiment']['score']:.0f}")
 
-    return results, macro_result
+    import stock_signals
+    return stock_signals.add_peer_ranks(results), macro_result
 
 
 def main():

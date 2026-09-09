@@ -12,6 +12,7 @@ plus a horizoned stock-trend outlook (1 week / 1 month / 6 months) used
 by the daily report's General section.
 """
 import os
+import time
 import json
 import re
 from datetime import datetime
@@ -30,6 +31,15 @@ if os.path.exists(_env_file):
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
                 os.environ.setdefault(key.strip(), val.strip())
+
+
+
+def _llm_log(payload):
+    """One-line JSON record of every LLM call / blend / clamp (Cloud Run stdout)."""
+    try:
+        print("LLMLOG " + json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        pass
 
 
 def analyze_macro():
@@ -66,12 +76,17 @@ def analyze_macro():
             )
         except Exception as e:
             print(f"  Claude macro analysis failed: {e}")
+            _llm_log({"kind": "macro", "status": "fallback", "error": str(e)[:200]})
 
     # Blend scores
     if claude_result:
         final_score = quant_score * 0.5 + claude_result["score"] * 0.5
     else:
         final_score = quant_score
+    _llm_log({"kind": "macro_blend", "quant_score": round(quant_score, 1),
+              "claude_score": round(claude_result["score"], 1) if claude_result else None,
+              "final_score": round(max(0, min(100, final_score)), 1),
+              "source": "claude" if claude_result else "fallback"})
 
     final_score = round(max(0, min(100, final_score)), 1)
     recommendation = _get_macro_recommendation(final_score)
@@ -79,6 +94,8 @@ def analyze_macro():
     trend = classify_market_trend(market_data)
     outlook = merge_trend_outlook(trend, final_score, market_data, claude_result)
     tape = classify_macro_tape(market_data)
+    import cash_entry_plan
+    cash_plan = cash_entry_plan.from_market_data(market_data)
 
     return {
         "score": final_score,
@@ -92,14 +109,17 @@ def analyze_macro():
         "trend": trend,
         "trend_outlook": outlook,
         "macro_tape": tape,
+        "cash_entry_plan": cash_plan,
     }
 
 
 def _fetch_market_data():
     """Fetch data for major indices and VIX."""
     data = {}
+    cash_histories = {}
     tickers = {
-        "SPY": "S&P 500",
+        "SPY": "S&P 500 ETF",
+        "^GSPC": "S&P 500 Price Index",
         "QQQ": "Nasdaq 100",
         "DIA": "Dow Jones",
         "IWM": "Russell 2000",
@@ -123,6 +143,8 @@ def _fetch_market_data():
             if df is not None and not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.droplevel(1)
+                if ticker in ("^GSPC", "^VIX"):
+                    cash_histories[ticker] = df
                 close = df["Close"]
                 current = float(close.iloc[-1])
 
@@ -166,6 +188,11 @@ def _fetch_market_data():
         except Exception:
             pass
 
+    if '^GSPC' in data:
+        import cash_entry_plan
+        data['^GSPC']['cash_plan_snapshot'] = cash_entry_plan.snapshot_from_history(
+            cash_entry_plan.completed_daily_history(cash_histories.get('^GSPC')),
+            cash_entry_plan.completed_daily_history(cash_histories.get('^VIX')))
     return data
 
 
@@ -332,7 +359,11 @@ def _quantitative_macro_score(market_data):
 def _claude_macro_analysis(market_data, news_items, quant_signals, api_key):
     """Use Claude to produce a comprehensive macro market assessment."""
     import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    _ws = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        default_headers={"anthropic-workspace-id": _ws} if _ws else None,
+    )
 
     now = datetime.now()
 
@@ -445,20 +476,38 @@ Guidelines:
 - Distinguish index trend from internals. Equal-weight/energy up + semis down is rotation, not a reason to dump the whole book or to all-in semiconductors.
 - September is historically the weakest month; do not treat that as a crash signal by itself."""
 
+    _t0 = time.time()
     response = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=2500,
         messages=[{"role": "user", "content": prompt}],
     )
+    _latency = round(time.time() - _t0, 3)
+    _usage = getattr(response, "usage", None)
+    _meta = {
+        "kind": "macro", "model": "claude-haiku-4-5", "latency_s": _latency,
+        "in_tokens": getattr(_usage, "input_tokens", None),
+        "out_tokens": getattr(_usage, "output_tokens", None),
+        "stop_reason": getattr(response, "stop_reason", None),
+        "quant_signals": quant_signals, "mechanical_phase": classified.get("phase"),
+        "mechanical_structure": classified.get("structure"),
+    }
 
     text = response.content[0].text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\n?", "", text)
         text = re.sub(r"\n?```$", "", text)
 
-    result = json.loads(text)
-    result["score"] = max(0, min(100, float(result["score"])))
-    result["confidence"] = max(0, min(1, float(result["confidence"])))
+    try:
+        result = json.loads(text)
+        result["score"] = max(0, min(100, float(result["score"])))
+        result["confidence"] = max(0, min(1, float(result["confidence"])))
+    except Exception as e:
+        _llm_log({**_meta, "status": "parse_error", "error": str(e)[:200],
+                  "raw_head": text[:120]})
+        raise
+    # Full model output is kept verbatim for the reasoning analysis.
+    _llm_log({**_meta, "status": "ok", "result": result})
     return result
 
 
@@ -939,14 +988,22 @@ def merge_trend_outlook(trend, macro_score, market_data, claude_result):
         # Guardrail: do not let the model scream "all-in" on a near-high pullback.
         spy_dd = (trend or {}).get("spy_from_high")
         vix = (trend or {}).get("vix")
+        _raw_stance = stance
         if stance == "aggressive_buy" and not (
             vix is not None and vix >= 28 and spy_dd is not None and spy_dd <= -10
         ):
             stance = "scale_in"
         if stance == "aggressive_sell" and spy_dd is not None and spy_dd > -10:
             stance = "trim"
+        _llm_log({"kind": "clamp", "llm_stance": _raw_stance, "final_stance": stance,
+                  "clamped": _raw_stance != stance,
+                  "mechanical_stance": base.get("stance"), "spy_from_high": spy_dd,
+                  "vix": vix})
         base["stance"] = stance
         base["stance_label"] = STANCE_LABELS[stance]
+    else:
+        _llm_log({"kind": "clamp", "llm_stance": stance, "final_stance": base.get("stance"),
+                  "clamped": None, "invalid_stance": True})
 
     sizing = claude_result.get("sizing_guidance")
     if isinstance(sizing, str) and sizing.strip():

@@ -7,3 +7,4 @@ beautifulsoup4>=4.12
 requests>=2.31
 anthropic>=0.40
 alpaca-py>=0.30
+markdown-it-py>=3.0,<5

@@ -44,7 +44,7 @@ def score_stock_at_date(ticker, all_daily, benchmark_daily, end_idx):
         return None
 
     price_data = all_daily.iloc[start_idx:end_idx].copy()
-    bench_data = benchmark_daily.iloc[start_idx:end_idx].copy() if benchmark_daily is not None else None
+    bench_data = benchmark_daily.loc[:price_data.index[-1]].tail(500).copy() if benchmark_daily is not None else None
 
     if len(price_data) < min_history:
         return None
@@ -57,10 +57,12 @@ def score_stock_at_date(ticker, all_daily, benchmark_daily, end_idx):
     sent_result = {"score": 0.5, "confidence": 0.0, "num_articles": 0,
                    "num_bullish": 0, "num_bearish": 0, "headlines": []}
 
+    import stock_signals
     score_result = scorer.score_stock(
         tech_result, sent_result, trend_result,
         alpha_score=alpha_score,
         weights=ANALYZER_WEIGHTS,
+        research_result=stock_signals.analyze(price_data, bench_data),
     )
     return score_result
 

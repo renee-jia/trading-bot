@@ -56,7 +56,7 @@ def _fetch_vix():
     return _vix_cache["data"]
 
 
-def analyze(data, benchmark_data, params=None, macro_score=None):
+def analyze(data, benchmark_data, params=None, macro_score=None, vix_data=None):
     """
     Analyze macro trend for a stock.
 
@@ -82,7 +82,7 @@ def analyze(data, benchmark_data, params=None, macro_score=None):
     regime = _market_regime(data, params)
     momentum = _long_term_momentum(data)
     breadth = _price_breadth(data)
-    vix = _vix_analysis()
+    vix = _vix_analysis(as_of=data.index[-1], data=vix_data)
 
     # Weighted combination
     weights = {
@@ -164,7 +164,7 @@ def _empty_result():
 # VIX Fear/Greed Analysis
 # ---------------------------------------------------------------------------
 
-def _vix_analysis():
+def _vix_analysis(as_of=None, data=None):
     """
     Analyze VIX (CBOE Volatility Index) for market fear/greed.
 
@@ -175,7 +175,11 @@ def _vix_analysis():
 
     Also looks at VIX trend (rising = increasing fear, falling = calming).
     """
-    vix_data = _fetch_vix()
+    vix_data = _fetch_vix() if data is None else data
+    if vix_data is not None and as_of is not None:
+        dates = pd.to_datetime(vix_data.index).tz_localize(None).normalize()
+        cutoff = pd.Timestamp(as_of).tz_localize(None).normalize()
+        vix_data = vix_data.loc[dates <= cutoff]
 
     if vix_data is None or len(vix_data) < 20:
         return {"score": 0.5, "signals": {"vix_available": False}}

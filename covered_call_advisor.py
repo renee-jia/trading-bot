@@ -253,7 +253,7 @@ def _format_ticker_section(r):
         return "\n".join(lines)
 
     if vrp is not None and vrp < VRP_THIN_PT:
-        lines.append(f"> ⚠️ **权利金偏薄**：IV 低于真实波动率 {abs(vrp):.0f}pt，卖方期望值不佳。"
+        lines.append(f"> ⚠️ **权利金偏薄**：IV 低于真实波动率 {abs(vrp):.0f}pt，不能单凭此项确认卖方优势。"
                      "本期建议只覆盖下限张数，或跳过等 IV 回升。\n")
 
     dte_note = "（标准 45 天窗口）" if r["status"] == "ok" else "（财报临近，被迫缩短周期）"
@@ -270,9 +270,7 @@ def _format_ticker_section(r):
         f"**推荐到期日：{r['expiry']}（{r['dte']} DTE）**{dte_note} | "
         f"动量状态：{r['regime']} → 建议覆盖 **{cover}**{em_note}\n"
     )
-    if "趋势强" in r["regime"]:
-        lines.append("> 注：趋势股的实际涨穿率约为 delta 的 1.5-1.7 倍（经验校准）——"
-                     "表中 0.20 delta 实际被行权概率按 ~30-35% 估计，阶梯已整体下移至 0.15-0.25 delta。\n")
+    lines.append("Delta 是价格敏感度，不是已验证的行权或盈利概率。\n")
     lines.append("| 行权价 | OTM | Delta | Bid/Ask | **挂单价(mid)** | 权利金/张 | 收益率 | 年化 | OI |")
     lines.append("|---|---|---|---|---|---|---|---|---|")
     for l in r["ladder"]:
@@ -292,26 +290,14 @@ def _format_ticker_section(r):
     return "\n".join(lines)
 
 
-def build_covered_call_section(positions=None):
+def build_covered_call_section(positions=None, decisions=None):
     """Markdown section for the daily report. Returns "" when no positions set."""
-    if positions is None:
-        positions = get_positions()
-    if not positions:
-        return ""
-
-    rate = _risk_free_rate()
-    parts = [
-        "## Covered Call Advisor（持仓期权收租建议）\n",
-        "*规则：45 DTE 开仓 / GTC 50% 止盈或 21 DTE 滚动 / 到期日必须在财报前 / "
-        "趋势强则少覆盖+更远行权价（0.15-0.25Δ），磨底则多覆盖+更近（0.25-0.35Δ）。挂单用 mid 限价。*\n",
-    ]
-    for ticker, shares in positions.items():
-        try:
-            parts.append(_format_ticker_section(analyze_ticker(ticker, shares, rate)))
-        except Exception as e:
-            parts.append(f"### {ticker}\n\n*期权数据获取失败：{e}*\n")
-    parts.append("---\n")
-    return "\n".join(parts)
+    if decisions is not None:
+        from options_decision import render_tickets
+        text = render_tickets(decisions, {'covered_call'})
+        return "## Covered Call — 统一评分候选\n\n" + (text or "没有通过统一评分的 covered call 候选。") + "\n\n---\n"
+    return ("## Covered Call — 等待完整评分\n\n"
+            "缺少统一方向和期权链评分，本栏不单独输出开仓或滚动指令。\n\n---\n")
 
 
 if __name__ == "__main__":
