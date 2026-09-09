@@ -12,8 +12,10 @@ def format_markdown(text):
         def priority(part):
             title = part.splitlines()[0]
             groups = [('Executive Summary', 0), ('General', 1), ('Macro Desk', 2),
+                      ('AI Portfolio', 2.5),
                       ('今日建议买入', 3), ('Options Desk', 4), ('Options Research', 5),
-                      ('Covered Call', 6), ('Cash-secured Put', 7),
+                      ('Covered Call Advisor', 6), ('Covered Call', 6.1),
+                      ('Sell Put 雷达', 7), ('Cash-secured Put', 7.1),
                       ('Sell Put 方案', 8),
                       ('Top Picks', 9), ('Suggested Portfolio', 10),
                       ('评分后列', 11), ('Config', 12), ('Top Movers', 13),
@@ -51,7 +53,7 @@ blockquote { margin:20px 0; padding:10px 18px; border-left:4px solid #127c80;
 .table-scroll { overflow-x:auto; margin:18px 0; border:1px solid #dce5ef; border-radius:8px; }
 table { border-collapse:collapse; width:100%; font-size:13px; font-variant-numeric:tabular-nums; }
 th { background:#17364e; color:white; font-weight:600; text-align:left; }
-td,th { padding:10px 12px; border-bottom:1px solid #e2e8f0; vertical-align:top; min-width:75px; }
+td,th { padding:8px 10px; border-bottom:1px solid #e2e8f0; vertical-align:top; }
 tbody tr:nth-child(even) { background:#f5f8fb; } tbody tr:hover { background:#edf8f7; }
 td:first-child { font-weight:600; } td { overflow-wrap:break-word; }
 hr { border:0; border-top:1px solid #e4ebf2; margin:24px 0; }
@@ -68,9 +70,20 @@ summary { cursor:pointer; color:#12324c; font-weight:650; }
 """
 
 
+EMAIL_BUDGET = 92_000        # Gmail clips HTML bodies above ~102KB
+EMAIL_SECTION_CAP = 22_000   # bigger sections keep only their lead + summary table
+NOWRAP_CHARS = 28            # short cells stay on one line in email tables
+
+
+def _parser():
+    # breaks=True: single newlines inside a paragraph become <br>, so the
+    # line-per-fact layout of the desks survives instead of collapsing.
+    return MarkdownIt('commonmark', {'html': False, 'breaks': True}).enable('table')
+
+
 def render_html(markdown, *, email=False):
     """Disable raw HTML from external text; use a standards-based Markdown parser."""
-    parser = MarkdownIt('commonmark', {'html': False}).enable('table')
+    parser = _parser()
     tokens = parser.parse(markdown)
     toc = []
     for i, token in enumerate(tokens):
@@ -95,15 +108,94 @@ def render_html(markdown, *, email=False):
     if first >= 0 and not email:
         body = body[:first] + navigation + body[first:]
     if email:
-        # Inline essential styles for email clients that strip the style element.
-        for tag, css in [('table','border-collapse:collapse;width:100%;font-size:13px;'),
-                         ('th','background:#17364e;color:#fff;padding:10px;text-align:left;'),
-                         ('td','padding:10px;border-bottom:1px solid #dce5ef;vertical-align:top;'),
+        # Gmail (web and the Google-account mobile apps) honours the <style>
+        # block, so keep per-cell markup light: the body has to stay under the
+        # ~102KB clip. Only the wrap rule is inlined: short cells (prices,
+        # labels, dates) must not wrap into word-per-line towers in narrow mail
+        # panes, while long notes still wrap normally.
+        for tag, css in [('table','border-collapse:collapse;font-size:13px;'),
                          ('h2','color:#12324c;margin-top:32px;border-bottom:1px solid #dce5ef;'),
                          ('blockquote','background:#edf8f7;border-left:4px solid #127c80;padding:12px;')]:
             body = re.sub(fr'<{tag}(?=[ >])', f'<{tag} style="{css}"', body)
+        def nowrap(match):
+            text = re.sub(r'<[^>]+>', '', match.group(2))
+            if len(text) <= NOWRAP_CHARS:
+                return f'<{match.group(1)} style="white-space:nowrap">{match.group(2)}</{match.group(1)}>'
+            return match.group(0)
+        body = re.sub(r'<(t[dh])>(.*?)</t[dh]>', nowrap, body, flags=re.S)
     return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<title>Trading Bot · 每日策略报告</title><style>' + STYLE + '</style></head>'
             '<body><main style="font-family:Arial,sans-serif;line-height:1.75;color:#243247;">'
             + body + '</main></body></html>')
+
+
+def split_sections(markdown):
+    """(preamble, [(title, section_markdown), ...]) split on level-2 headings."""
+    parts = re.split(r'(?=^## )', markdown, flags=re.M)
+    sections = []
+    for part in parts[1:]:
+        title = part.splitlines()[0][3:].strip()
+        sections.append((title, part))
+    return parts[0], sections
+
+
+def _compact_section(section):
+    """Lead paragraphs and the first table only; per-name detail goes to the attachment."""
+    lines = section.splitlines()
+    kept, seen_table, in_table = [], False, False
+    for line in lines:
+        is_row = line.startswith('|')
+        if line.startswith('### ') or (seen_table and not in_table and is_row):
+            break
+        if is_row:
+            seen_table = in_table = True
+        elif in_table and not line.strip():
+            in_table = False
+        kept.append(line)
+    text = '\n'.join(kept).rstrip() + '\n\n*本栏仅摘要，逐股明细见附件完整报告。*\n\n'
+    return text
+
+
+def email_digest(markdown, budget=EMAIL_BUDGET, section_cap=EMAIL_SECTION_CAP):
+    """Email body that stays under Gmail's clip limit.
+
+    Sections are taken in report order (already decision-first). A section that
+    renders larger than `section_cap` is reduced to its lead and summary table;
+    the first section that would push the total over `budget` and everything
+    after it are listed as living in the attached full report, so the body is
+    always a clean prefix of the report. Returns (html, omitted).
+    """
+    head, sections = split_sections(markdown)
+    body, omitted, compacted = head, [], []
+    overhead = len(render_html('', email=True).encode('utf-8'))   # wrapper + <style>, counted once
+    def measure(text):
+        return len(render_html(text, email=True).encode('utf-8')) - overhead
+    size = overhead + measure(head) + 2500   # room for the closing 邮件正文说明 block
+    full = False
+    for title, section in sections:
+        if full or title.startswith('Detailed Analysis') or title.startswith('Disclaimer'):
+            omitted.append(title)
+            continue
+        html_size = measure(section)
+        if html_size > section_cap:
+            section = _compact_section(section)
+            html_size = measure(section)
+            compacted.append(title)
+        if size + html_size > budget:
+            # Strict prefix: the body is the report's leading sections, in
+            # order, so the reader never meets a gap in the middle.
+            full = True
+            omitted.append(title)
+            continue
+        body += section
+        size += html_size
+    if omitted or compacted:
+        note = '## 邮件正文说明\n\n'
+        if compacted:
+            note += '仅摘要：' + '；'.join(compacted) + '。\n'
+        if omitted:
+            note += '未放入正文：' + '；'.join(omitted) + '。\n'
+        note += '完整报告（含逐股 Detailed Analysis）见附件 HTML，可直接在浏览器打开。Gmail 会截断超过 100KB 的邮件正文，所以正文只保留决策栏目。\n'
+        body += '\n' + note
+    return render_html(body, email=True), omitted

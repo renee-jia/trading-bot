@@ -1,3 +1,23 @@
+# Option chain data source (2026-09-09)
+
+Every options desk (`options_research`, `covered_call_advisor`,
+`sell_put_advisor`, `ai_sell_put_plan`) gets its chain through
+`option_data.ticker(symbol)`. With Alpaca keys present the object serves
+expirations and chains from Alpaca — option contracts (open interest, contract
+size, root symbol) plus indicative snapshots (bid/ask with timestamp, implied
+volatility, greeks) — and delegates history, earnings calendar and quote type to
+yfinance, with Alpaca daily bars as the history fallback. Quoted deltas are used
+for the ladders when present; Black-Scholes fills gaps. Set
+`OPTION_DATA_SOURCE=yfinance` to force the Yahoo chain; without keys that is the
+automatic fallback, and any Alpaca failure falls back per symbol.
+
+Why: from the Cloud Run job Yahoo answered the first requests and then returned
+empty option chains once the 157-name equity fetch had run, so every desk
+reported 期权数据不可用 from at least 2026-08-31 through 2026-09-09 while the same
+code worked locally. Snapshot footers now print the quote source and time. The research overlay's
+front month prefers the standard monthly inside the 25–45 DTE window (weeklies
+at 30 DTE often fail the OI≥50 ATM gate even on AMD-sized names).
+
 # Options entry decisions — v2
 
 The option report now separates **stock direction**, **strategy suitability** and

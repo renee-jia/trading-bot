@@ -156,8 +156,10 @@ ai_sell_put_plan.py             Daily sell-put entry plan for a fixed AI watch l
 sentiment_analyzer.py           News headline sentiment
 stock_discovery.py              Weekly universe expansion
 report_generator.py             Markdown + HTML report output
-report_format.py                Shared web/email styling and Markdown rendering
-email_sender.py                 Email digest
+report_format.py                Shared web/email styling, Markdown rendering, Gmail-sized email digest
+email_sender.py                 Email digest + full report attachments
+option_data.py                  Option chains from Alpaca (yfinance fallback) for every options desk
+ai_portfolio.py                 AI Portfolio roll-up section (NVDA/AVGO/GOOGL/META/TSM/MU/AMAT/ORCL/ANET/SNPS)
 alpaca_trader.py                Paper/live execution via Alpaca
 backtest_strategy.py            Strategy vs buy-and-hold (single window)
 backtest_years.py               Per-year sweep vs SPY & Nasdaq

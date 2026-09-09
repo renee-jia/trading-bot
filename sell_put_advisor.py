@@ -29,6 +29,7 @@ import yfinance as yf
 from covered_call_advisor import (
     VRP_THIN_PT,
     _bs_call_delta,
+    _delta_or_bs,
     _next_earnings,
     _pick_expiry,
     _risk_free_rate,
@@ -182,7 +183,8 @@ def analyze_put_ladder(ticker, rate, t=None, hist=None, today=None):
     `t` / `hist` let callers reuse an already-fetched Ticker and 1y history
     (ai_sell_put_plan does this so each name is fetched once).
     """
-    t = t or yf.Ticker(ticker)
+    import option_data
+    t = t or option_data.ticker(ticker, today=today)
     hist = t.history(period="1y") if hist is None else hist
     closes = hist["Close"]
     spot = float(closes.iloc[-1])
@@ -196,8 +198,11 @@ def analyze_put_ladder(ticker, rate, t=None, hist=None, today=None):
     rv_trimmed = float(last21[last21.abs().rank(ascending=False) > 3].std() * np.sqrt(252))
 
     earnings = _next_earnings(t)
-    safe_exps = filter_macro_safe_expiries(t.options)
+    expirations = list(t.options or ())
+    safe_exps = filter_macro_safe_expiries(expirations)
     expiry, dte, status = _pick_expiry(safe_exps, earnings, today=today)
+    if not expirations:
+        status = "no_chain"  # data source returned nothing: not an earnings wait
 
     result = {
         "ticker": ticker,
@@ -212,11 +217,13 @@ def analyze_put_ladder(ticker, rate, t=None, hist=None, today=None):
         "ladder": [],
         "atm_iv": None,
         "exp_move": None,
+        "quote_note": None,
     }
-    if status == "wait" or expiry is None:
+    if status in ("wait", "no_chain") or expiry is None:
         return result
 
     chain = t.option_chain(expiry)
+    result["quote_note"] = option_data.quote_note(chain)
     puts = chain.puts
     puts = puts[
         (puts.bid > 0) & (puts.ask >= puts.bid) & (puts.strike < spot)
@@ -226,17 +233,13 @@ def analyze_put_ladder(ticker, rate, t=None, hist=None, today=None):
         result["status"] = "wait"
         return result
 
-    atm_idx = (chain.puts.strike - spot).abs().idxmin()
-    result["atm_iv"] = float(chain.puts.loc[atm_idx, "impliedVolatility"])
+    result["atm_iv"] = option_data.atm_iv(chain.puts, spot, fallback=rv_trimmed)
 
     t_years = dte / 365
     result["exp_move"] = spot * result["atm_iv"] * sqrt(t_years)
-    # Put delta = call delta - 1; ladder targets use absolute value.
-    puts["abs_delta"] = [
-        1.0 - _bs_call_delta(spot, k, t_years, rate,
-                             iv if iv and 0.10 <= iv <= 2.00 else result["atm_iv"])
-        for k, iv in zip(puts.strike, puts.impliedVolatility)
-    ]
+    # Put delta = call delta - 1; ladder targets use absolute value. Quoted
+    # greeks win when the source provides them.
+    puts["abs_delta"] = _delta_or_bs(puts, spot, t_years, rate, result["atm_iv"], put=True)
 
     used = set()
     for target in TARGET_DELTAS:
@@ -282,6 +285,9 @@ def _format_candidate(c, r):
         lines.append("> ⚠️ **接刀警告**：Bot评分偏弱，这次下跌可能是基本面恶化而非情绪错杀。"
                      "只在你愿意按行权价接股的前提下卖put，或直接跳过。\n")
 
+    if r["status"] == "no_chain":
+        lines.append("> 期权链不可用：数据源没有返回任何到期日，本期不给合约；只用股票按买点分批。\n")
+        return "\n".join(lines)
     if r["status"] == "wait" or not r["ladder"]:
         lines.append("> 所有 25+ DTE 到期日均跨财报、贴着 FOMC/CPI/非农，或期权数据不可用——"
                      "大跌+事件风险是双重风险，**建议观望**。\n")
@@ -318,11 +324,46 @@ def _format_candidate(c, r):
     else:
         lines.append(f"> 管理：成交后挂 GTC 买回单（限价 = 成交价 × 50%）；未触发则 **{roll_date}**（剩21天）平仓滚动；"
                      f"跌穿行权价时，愿意接股就等行权（成本=保本价），不愿意就向下+向外滚动。\n")
+    if r.get("quote_note"):
+        lines.append(f"*{r['quote_note']}；下单前重新报价。*\n")
     return "\n".join(lines)
 
 
+def build_sell_put_radar(ranked, exclude=None, rate=None, analyzer=None, today=None):
+    """Panic-drop scan of the analyzed universe with cash-secured put ladders."""
+    if exclude is None:
+        exclude = held_tickers()
+    candidates, skipped = find_drop_candidates(ranked, exclude=exclude)
+
+    header = [
+        "## Sell Put 雷达（大跌收租机会）\n",
+        f"*扫描规则：5日 ≤ {DROP_5D:.0f}% / 单日 ≤ {DROP_1D:.0f}%（5日仍 > +{RALLY_5D:.0f}% 则忽略）/ "
+        f"1月 ≤ {DROP_1M:.0f}% 且 RSI < {RSI_OVERSOLD:.0f}。"
+        "已持有的股票不推荐；FOMC 后 3 个自然日内到期的合约跳过"
+        "（CPI/非农/PCE 当天到期也跳过）。收租为主，被行权则以折价接股。*\n",
+    ]
+    if skipped:
+        skip_txt = "；".join(f"{s['ticker']}（{s['reason']}）" for s in skipped[:8])
+        header.append(f"*已排除：{skip_txt}*\n")
+    if not candidates:
+        header.append("今日 list 中无股票触发大跌条件，无 sell put 候选。\n")
+        header.append("---\n")
+        return "\n".join(header)
+
+    rate = _risk_free_rate() if rate is None else rate
+    analyzer = analyzer or analyze_put_ladder
+    parts = header
+    for c in candidates:
+        try:
+            parts.append(_format_candidate(c, analyzer(c["ticker"], rate, today=today)))
+        except Exception as e:
+            parts.append(f"### {c['ticker']}\n\n*期权数据获取失败：{e}*\n")
+    parts.append("---\n")
+    return "\n".join(parts)
+
+
 def build_sell_put_section(ranked, exclude=None, decisions=None):
-    """Markdown section scanning the analyzed universe for sell-put setups."""
+    """Unified-score cash-secured put candidates (no extra fetches)."""
     if decisions is not None:
         from options_decision import render_tickets
         text = render_tickets(decisions, {'cash_secured_put'})

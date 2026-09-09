@@ -35,6 +35,8 @@ DEFAULT_WATCH = (
     "AVGO", "MSFT", "MU", "QCOM", "MRVL", "ASML", "LRCX", "CDNS",
     "VRT", "ANET", "PLTR",
     "NVDA", "TSM", "AMD", "AMAT", "KLAC", "ORCL", "SNPS",
+    "GOOGL", "META",  # AI Portfolio names (ai_portfolio.py) that were missing
+    "AMZN", "STX", "SNDK", "CRWD", "CRDO", "COHR",  # AI Portfolio 观察名单 additions
 )
 
 # Entry gates
@@ -56,6 +58,7 @@ ENTRY_LABELS = {
     "wait_earnings": "跨财报 / 无合适到期",
     "no": "不建议用 put 接",
     "no_data": "数据不足",
+    "no_chain": "期权链不可用",
 }
 
 TODAY_LABELS = {
@@ -151,6 +154,8 @@ def decide_entry(card, r, event, trend, held, vrp):
     score = card.get("score")
     if r is None or r.get("spot") is None:
         return "no_data", "行情或期权链不可用"
+    if r.get("status") == "no_chain":
+        return "no_chain", "数据源没有返回任何到期日（不是跨财报），本期只用股票按买点分批"
     if card.get("levered"):
         return "no", "杠杆产品不卖 put"
     if trend == "broken" or (score is not None and score < SMALL_SCORE):
@@ -212,7 +217,8 @@ def pick_strike(entry, ladder):
 
 def analyze_name(ticker, rate, today=None, ticker_factory=None):
     """One yfinance pass per name: history, levels, put ladder."""
-    t = (ticker_factory or yf.Ticker)(ticker)
+    import option_data
+    t = (ticker_factory or option_data.ticker)(ticker)
     hist = t.history(period="1y")
     if hist is None or hist.empty or "Close" not in hist:
         raise ValueError("无历史行情")
@@ -295,6 +301,7 @@ def build_plan(ranked, macro_result=None, held=None, today=None,
             "expiry": (r or {}).get("expiry"),
             "dte": (r or {}).get("dte"),
             "chain_status": (r or {}).get("status") if r else "error",
+            "quote_note": (r or {}).get("quote_note"),
             "exp_move": (r or {}).get("exp_move"),
             "low_21d": lv.get("low_21d"),
             "ladder": ladder,
@@ -325,6 +332,8 @@ def _pick_txt(p):
     k = p.get("pick")
     if p.get("entry") == "no":
         return "— 不卖"
+    if p.get("entry") == "no_chain":
+        return "— 链不可用"
     if not k or not p.get("expiry"):
         return "—"
     prefix = "事件后再开：" if p.get("entry") == "wait_event" else ""
@@ -399,8 +408,12 @@ def _detail(p):
             roll = exp_date - timedelta(days=21)
             lines.append(f"> 管理：成交后挂 GTC 买回单（成交价 × 50%）；未触发则 **{roll}** 平仓滚动；"
                          f"跌穿行权价且仍想要这只股就等行权，不想要就向下+向外滚。\n")
+    elif p.get("chain_status") == "no_chain":
+        lines.append("> 期权链不可用：数据源没有返回任何到期日（不是跨财报）。只用股票按买点分批，下次运行再看。\n")
     elif p.get("spot") is not None:
-        lines.append("> 本期没有可写的到期日（跨财报 / 贴事件 / 期权数据不可用），只用股票按买点分批。\n")
+        lines.append("> 本期没有可写的到期日（跨财报 / 贴事件），只用股票按买点分批。\n")
+    if p.get("quote_note") and p.get("ladder"):
+        lines.append(f"*{p['quote_note']}。*\n")
     return "\n".join(lines)
 
 
@@ -440,7 +453,9 @@ def build_section(plan):
     lines.append("")
     for p in names:
         lines.append(_detail(p))
-    lines.append("所有报价为 Yahoo 快照，无时间戳；下单前重新报价。现金担保 put 需预留行权价×100，"
+    notes = {p.get("quote_note") for p in names if p.get("quote_note")}
+    provenance = "；".join(sorted(notes)) if notes else "报价为 Yahoo 快照，无时间戳"
+    lines.append(f"{provenance}；下单前重新报价。现金担保 put 需预留行权价×100，"
                  "并接受按行权价接股。本栏不含已有期权仓位，不给平仓指令。\n")
     lines.append("---\n")
     return "\n".join(lines)
@@ -458,8 +473,14 @@ def email_lines(plan):
     lines = ["=== AI SELL PUT 方案 ===", f"立场: {event.get('label', '—')}"]
     for p in plan.get("names") or []:
         k = p.get("pick")
-        chain = (f"{p['expiry']} ${k['strike']:.0f}P @{k['mid']:.2f} 年化{k['ann_pct']:.0f}%"
-                 if k and p.get("expiry") else "无合适到期")
+        if k and p.get("expiry"):
+            chain = f"{p['expiry']} ${k['strike']:.0f}P @{k['mid']:.2f} 年化{k['ann_pct']:.0f}%"
+        elif p.get("entry") == "no":
+            chain = "不卖"
+        elif p.get("entry") == "no_chain":
+            chain = "期权链不可用"
+        else:
+            chain = "无合适到期"
         bl = p.get("buy_levels")
         levels = (f"买点 {_money(bl['l1'])}/{_money(bl['l2'])}/{_money(bl['l3'])}" if bl else "买点 —")
         lines.append(

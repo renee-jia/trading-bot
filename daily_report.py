@@ -96,11 +96,13 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
 
     # Generate report (after trading, so portfolio section shows post-trade state)
     options_decisions = {}
+    ai_portfolio_data = {}
     report_path, _ = report_generator.generate_report(
         results, output_dir="reports", macro_result=macro_result,
         discovery_result=discovery_result,
         options_decisions=options_decisions,
         sell_put_plan=sell_put_plan,
+        ai_portfolio=ai_portfolio_data,
     )
     print(f"\nReport saved: {report_path}")
 
@@ -142,6 +144,10 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
             daily_watch.email_macro_lines(macro_result=macro_result)
         )
         summary_lines.append("")
+        if ai_portfolio_data and not ai_portfolio_data.get("error"):
+            import ai_portfolio
+            summary_lines.extend(ai_portfolio.email_lines(ai_portfolio_data))
+            summary_lines.append("")
         summary_lines.extend(
             daily_watch.email_watch_lines(
                 [{**r, 'options_decision':options_decisions.get(r['ticker'],
@@ -197,7 +203,8 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
 
     print(f"\n{summary}")
 
-    # Send email (full HTML-formatted report)
+    # Send email: decision-first HTML digest in the body (Gmail clips bodies
+    # over ~100KB), full HTML + Markdown report attached.
     if send_mail:
         with open(report_path, "r") as f:
             report_content = f.read()
@@ -205,7 +212,10 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
             f"Stock Analysis Report — {date_str} | "
             f"{(macro_result or {}).get('trend_outlook', {}).get('stance_label') or (str(len(top_picks)) + ' Buys')}"
         )
-        email_sender.send_report_email(report_content, subject=subject)
+        html_path = os.path.splitext(report_path)[0] + ".html"
+        attachments = [p for p in (html_path, report_path) if os.path.exists(p)]
+        email_sender.send_report_email(report_content, subject=subject,
+                                       attachments=attachments, text_summary=summary)
 
     return report_path
 

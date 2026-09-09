@@ -6,8 +6,10 @@ stored in .env file.
 """
 import smtplib
 import os
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email import encoders
 from datetime import datetime
 from pathlib import Path
 
@@ -22,13 +24,17 @@ if _env_file.exists():
                 os.environ.setdefault(key.strip(), val.strip())
 
 
-def send_report_email(report_content, subject=None):
+def send_report_email(report_content, subject=None, attachments=None, text_summary=None):
     """
-    Send the markdown report as an email.
+    Send the report: a decision-first HTML digest in the body (kept under
+    Gmail's ~102KB clip limit) plus the full report as attachments.
 
     Args:
         report_content: The markdown report string.
         subject: Optional custom subject line.
+        attachments: Optional list of file paths (e.g. the .html and .md report).
+        text_summary: Optional plain-text digest for text-only clients; the
+            full Markdown is used when omitted.
 
     Returns:
         True if sent successfully, False otherwise.
@@ -47,15 +53,31 @@ def send_report_email(report_content, subject=None):
     if subject is None:
         subject = f"Daily Stock Report - {datetime.now().strftime('%Y-%m-%d')}"
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
 
-    # Convert markdown tables to simple HTML for better email rendering
-    html_body = _markdown_to_html(report_content)
-    msg.attach(MIMEText(report_content, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    html_body, omitted = _markdown_to_html(report_content)
+    plain = text_summary or report_content
+    if attachments:
+        plain += "\n\n完整报告见附件：" + ", ".join(os.path.basename(p) for p in attachments)
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(plain, "plain", "utf-8"))
+    alternative.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(alternative)
+    for path in attachments or []:
+        try:
+            with open(path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=os.path.basename(path))
+            msg.attach(part)
+        except OSError as e:
+            print(f"Skipping attachment {path}: {e}")
+    if omitted:
+        print(f"Email body omits {len(omitted)} section(s); full report attached.")
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -69,6 +91,6 @@ def send_report_email(report_content, subject=None):
 
 
 def _markdown_to_html(md):
-    """Use the same typography, tables and safe Markdown as the saved report."""
-    from report_format import render_html
-    return render_html(md, email=True)
+    """Same typography and safe Markdown as the saved report, sized for Gmail."""
+    from report_format import email_digest
+    return email_digest(md)

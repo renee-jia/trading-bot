@@ -13,12 +13,14 @@ import pandas as pd
 from bs4 import BeautifulSoup
 import yfinance as yf
 import cash_entry_plan
+import covered_call_advisor
 import daily_watch
 import macro_analyzer
 import options_research
 import report_generator
-from report_format import render_html
+from report_format import EMAIL_BUDGET, email_digest, render_html
 import scorer
+import sell_put_advisor
 import stock_signals
 import strategy
 import technical_analyzer
@@ -32,6 +34,7 @@ def validate(markdown, html, rows):
     assert markdown.index('## Executive Summary') < markdown.index('## General')
     assert markdown.index('## General') < markdown.index('## 今日建议买入')
     assert '$400k Cash' in markdown and '候选分（未启用）' in markdown
+    assert '## AI Portfolio' in markdown and markdown.index('## AI Portfolio') < markdown.index('## 今日建议买入')
     assert 'Bottom 20 — Sell/Avoid' not in markdown
     width = None
     for line in markdown.splitlines():
@@ -54,8 +57,15 @@ def validate(markdown, html, rows):
     email = BeautifulSoup(render_html(markdown, email=True), 'html.parser')
     assert not email.select('details')
     assert len(email.select('table')) == len(soup.select('table'))
+    # The mailed body must stay under Gmail's clip limit and keep the decision desks.
+    digest, omitted = email_digest(markdown)
+    assert len(digest.encode('utf-8')) <= EMAIL_BUDGET, len(digest)
+    for key in ('Executive Summary', 'General', 'AI Portfolio', '今日建议买入'):
+        assert key in digest and not any(key in o for o in omitted), key
+    assert 'Detailed Analysis' in omitted
     return {'stocks':len(rows), 'tables':len(soup.select('table')),
-            'sections':len(ids), 'collapsed_stock_details':len(soup.select('details'))}
+            'sections':len(ids), 'collapsed_stock_details':len(soup.select('details')),
+            'email_digest_bytes':len(digest.encode('utf-8')), 'email_omitted':omitted}
 
 
 def run(replay=None):
@@ -114,8 +124,13 @@ def run(replay=None):
             raise ValueError('Saved snapshot unavailable')
         return dict(result)
     decisions = {}
+    # Holdings stay out of the validation artifact; the panic-drop radar keeps
+    # its section but must not fetch chains during a replay.
     with patch.object(daily_watch,'held_tickers',return_value=set()), \
          patch.object(report_generator,'_build_alpaca_performance',return_value=''), \
+         patch.object(covered_call_advisor,'build_covered_call_ladders',return_value=''), \
+         patch.object(sell_put_advisor,'analyze_put_ladder',
+                      side_effect=ValueError('validation replay: chain fetch disabled')), \
          patch.object(options_research,'analyze_ticker',side_effect=replay_option):
         path, markdown = report_generator.generate_report(rows,output_dir=str(output),macro_result=macro,
                                                           options_decisions=decisions,
@@ -137,6 +152,7 @@ def run(replay=None):
     html = render_html(markdown)
     Path(path).write_text(markdown)
     Path(path).with_suffix('.html').write_text(html)
+    Path(path).with_name(Path(path).stem + '_email.html').write_text(email_digest(markdown)[0])
     checks = validate(markdown, html, rows)
     checks.update(report=path,scope=inputs['scope'],options_snapshots=len(snapshots),
                   options_usable=len(decisions), options_unavailable=[s['ticker'] for s in snapshots if 'decision' not in s])

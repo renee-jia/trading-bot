@@ -161,3 +161,12 @@ def test_null_macro_tape_and_no_new_short():
                                    analyzer=analyze, held=set(), today=date(2026, 9, 8))
     assert results[0]['decision']['status'] == 'wait'
     assert results[0]['decision']['candidates'] == []
+
+
+def test_front_month_prefers_the_monthly_inside_the_window():
+    class Weekly(FakeTicker):
+        options = ['2026-10-08', '2026-10-16', '2026-11-07']   # 30 DTE weekly vs 38 DTE monthly
+    r = opt.analyze_ticker('ABC', date(2026, 9, 8), lambda _: Weekly())
+    assert r['expiry'] == '2026-10-16'
+    ref = opt.analyze_ticker('ABC', date(2026, 9, 8), lambda _: FakeTicker())
+    assert ref['expiry'] == '2026-10-08'                       # no monthly available: closest to 30 DTE

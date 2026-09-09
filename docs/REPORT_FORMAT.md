@@ -8,9 +8,30 @@ Markdown renderer with inline table styles and all stock details expanded.
 Raw HTML from report text is escaped, and unsafe link schemes are rejected by
 the Markdown parser. No scripts, remote fonts, or other assets are needed.
 
-Reading order: overview, General and cash plan, macro desk, stock and options
-actions (including the AI 持有标的 Sell Put 方案 desk, see `AI_SELL_PUT_PLAN.md`),
-rankings and allocation, research/methodology, individual details.
+Reading order: overview, General and cash plan, macro desk, the AI Portfolio
+roll-up (`AI_PORTFOLIO.md`), stock and options actions (covered-call ladders for
+held shares, the sell-put radar, their unified-score second opinions, and the
+AI 持有标的 Sell Put 方案 desk, see `AI_SELL_PUT_PLAN.md`), rankings and
+allocation, research/methodology, individual details.
+
+Single newlines inside a paragraph render as line breaks (`breaks=True`), so the
+line-per-reading layout of the cash plan and desks is preserved instead of
+being merged into one paragraph.
+
+## Email
+
+Gmail clips message bodies above ~102KB and hides the rest behind "View entire
+message", which is where the 2026-09-09 report was cut off (the body reached
+~770KB, so the clip landed inside Top Picks). `report_format.email_digest`
+therefore builds the mailed body from the report sections in order until
+`EMAIL_BUDGET` (92KB) is reached. A section that renders above
+`EMAIL_SECTION_CAP` (22KB) is reduced to its lead paragraphs and first summary
+table; Detailed Analysis and Disclaimer never go in the body. A closing
+「邮件正文说明」 block lists what was compacted or left out. The full `.html`
+and `.md` reports are attached by `email_sender.send_report_email`, and the
+plain-text part carries the console summary. In email tables, cells up to 28
+characters are `white-space:nowrap` so prices, labels and dates do not wrap
+into one-word-per-line towers in narrow mail panes.
 Low-ranked stocks are explicitly a relative ranking, not a blanket sell list.
 Experimental scores retain their disabled status. Per-stock budget percentages
 are separate from the General cash pool and its conditional deployment cap.
@@ -25,8 +46,12 @@ fetches 17 public macro series and up to 8 option snapshots, and writes the full
 report, raw input JSON, and validation results under `reports/report_validation`.
 The validator checks Markdown table widths, section ordering, unique navigation
 targets, web/email table parity, individual detail coverage, disabled candidate
-score promotion, and consistent per-name option labels in the email summary.
-Unavailable option snapshots must remain unavailable in the replay.
+score promotion, consistent per-name option labels in the email summary, the
+AI Portfolio placement, and that the email digest stays under the Gmail budget
+while keeping the decision desks (it also writes `*_email.html`).
+Unavailable option snapshots must remain unavailable in the replay. Covered-call
+ladders (personal holdings) are blanked and the sell-put radar's chain fetch is
+disabled during validation.
 
 Replay a saved sample without network access:
 

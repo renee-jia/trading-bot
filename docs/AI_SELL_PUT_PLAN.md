@@ -13,11 +13,16 @@ stay as they are; this desk sits next to them and always gives an answer per nam
 ```
 AVGO, MSFT, MU, QCOM, MRVL, ASML, LRCX, CDNS, VRT, ANET, PLTR   ← required
 NVDA, TSM, AMD, AMAT, KLAC, ORCL, SNPS                          ← desk additions
+GOOGL, META, AMZN, STX, SNDK, CRWD, CRDO, COHR                  ← AI Portfolio core + watch names
 ```
 
-Each name costs one `yfinance` history pull plus one option-chain pull
-(two when the chosen expiry needs re-checking), so 18 names add roughly one to
-two minutes to the daily job.
+Each name costs one history pull plus one option-chain pull (contracts and
+snapshots from Alpaca via `option_data.py`, see `OPTIONS_RESEARCH.md`), so 26
+names add roughly two minutes to the daily job.
+
+A name whose data source returns no expirations at all is labelled
+`期权链不可用` (state `no_chain`) rather than `跨财报 / 无合适到期`, so a data
+outage is not mistaken for an earnings wait; the stock-add columns still work.
 
 ## The four answers
 
@@ -54,6 +59,7 @@ held names, earnings waits, thin premium, event blackout, fetch errors, section
 and email rendering, the env override, and a fake-`yfinance` ladder build.
 Run `.venv_trading/bin/python -m pytest -q`.
 
-Quotes are Yahoo snapshots without a timestamp. Nothing here is an order:
-reprice live, reserve strike × 100 cash, and only sell a put on a name you are
-willing to own at that strike.
+Quotes are Alpaca indicative snapshots (the footer prints the latest quote
+time) or Yahoo snapshots without a timestamp when Alpaca is unavailable.
+Nothing here is an order: reprice live, reserve strike × 100 cash, and only
+sell a put on a name you are willing to own at that strike.

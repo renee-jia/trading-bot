@@ -59,3 +59,45 @@ def test_low_rank_does_not_label_buy_stock_as_sell():
     section = report_generator._build_bottom_20([row])
     assert 'Sell/Avoid' not in section and '| Buy |' in section
     assert '相对后列' in section
+
+
+def test_soft_line_breaks_stay_visible():
+    md = '# R\n\n## A\n\n**读数一** 1\n**读数二** 2\n'
+    html = render_html(md)
+    assert html.count('<br') == 1
+    assert '读数一' in html and '读数二' in html
+
+
+def test_email_short_cells_do_not_wrap_but_notes_do():
+    md = '# R\n\n## A\n\n| 代码 | 说明 |\n|---|---|\n| **AVGO** | ' + '很长的说明' * 12 + ' |\n'
+    html = render_html(md, email=True)
+    soup = BeautifulSoup(html, 'html.parser')
+    cells = soup.select('tbody td')
+    assert 'nowrap' in cells[0].get('style', '') and 'nowrap' not in cells[1].get('style', '')
+
+
+def test_email_digest_respects_gmail_budget_and_lists_the_rest():
+    from report_format import email_digest, EMAIL_BUDGET
+    table = '| 列 | 值 |\n|---|---|\n' + ''.join(f'| 行{i} | {"数据" * 20} |\n' for i in range(60))
+    md = '# R\n\n' + ''.join(f'## Section {n}\n\n开头。\n\n{table}\n### 明细 {n}\n\n{table}\n---\n' for n in range(40))
+    md += '## Detailed Analysis\n\n### AAPL - Apple\n\n' + table + '\n## Disclaimer\n\nEnd\n'
+    html, omitted = email_digest(md)
+    assert len(html.encode('utf-8')) <= EMAIL_BUDGET
+    assert 'Section 0' in html and '本栏仅摘要' in html and '明细 0' not in html
+    assert 'Detailed Analysis' in omitted and 'Disclaimer' in omitted and 'Section 39' in omitted
+    assert '未放入正文' in html and '仅摘要' in html
+    small = '# R\n\n## A\n\nBody\n'
+    html, omitted = email_digest(small)
+    assert omitted == [] and '邮件正文说明' not in html
+
+
+def test_ai_portfolio_sorts_between_macro_and_buy_list():
+    md = ('# R\n\n## 今日建议买入\n\nBuy\n\n## AI Portfolio — 核心 AI 名单\n\nAI\n\n'
+          '## Macro Desk — 今日宏观\n\nMacro\n\n## Sell Put 雷达（大跌收租机会）\n\nRadar\n\n'
+          '## Cash-secured Put — 统一评分候选\n\nPut\n\n## Covered Call — 统一评分候选\n\nCC2\n\n'
+          '## Covered Call Advisor（持仓期权收租建议）\n\nCC1\n')
+    out = format_markdown(md)
+    order = [out.index(k) for k in ('## Macro Desk', '## AI Portfolio', '## 今日建议买入',
+                                    '## Covered Call Advisor', '## Covered Call — 统一',
+                                    '## Sell Put 雷达', '## Cash-secured Put')]
+    assert order == sorted(order)

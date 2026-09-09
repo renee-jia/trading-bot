@@ -65,9 +65,17 @@ def chain_metrics(chain, spot, dte):
     }
 
 
+def _is_monthly(day):
+    """Third Friday (standard monthly expiry)."""
+    return day.weekday() == 4 and 15 <= day.day <= 21
+
+
 def analyze_ticker(symbol, today=None, ticker_factory=None):
     today = today or date.today()
-    ticker = (ticker_factory or yf.Ticker)(symbol)
+    if ticker_factory is None:
+        import option_data
+        ticker_factory = lambda s: option_data.ticker(s, today=today)
+    ticker = ticker_factory(symbol)
     history = ticker.history(period='6mo', auto_adjust=False)
     closes = pd.to_numeric(history.get('Adj Close', history['Close']), errors='coerce')
     if len(closes) < 22 or not np.isfinite(closes.tail(22)).all() or (closes.tail(22) <= 0).any():
@@ -79,11 +87,16 @@ def analyze_ticker(symbol, today=None, ticker_factory=None):
     rv = float(returns.tail(21).std(ddof=1) * np.sqrt(252))
     rv63 = float(returns.tail(63).std(ddof=1)*np.sqrt(252)) if len(closes) >= 64 and np.isfinite(returns.tail(63)).all() else None
     price_date = history.index[-1].date() if isinstance(history.index, pd.DatetimeIndex) else None
-    expiries = [(e, (date.fromisoformat(e)-today).days) for e in ticker.options]
+    expiries = [(e, (date.fromisoformat(e)-today).days) for e in (ticker.options or ())]
+    if not expiries:
+        raise ValueError('期权链不可用：数据源没有返回到期日')
     near = [x for x in expiries if 25 <= x[1] <= 45]
     if not near:
         raise ValueError('无 25–45 DTE 期权链')
-    expiry, dte = min(near, key=lambda x: abs(x[1]-30))
+    # Monthlies carry the open interest; a weekly at 30 DTE often fails the
+    # OI>=50 ATM gate even on very liquid names.
+    monthlies = [x for x in near if _is_monthly(date.fromisoformat(x[0]))]
+    expiry, dte = min(monthlies or near, key=lambda x: abs(x[1]-30))
     result = chain_metrics(ticker.option_chain(expiry), spot, dte)
     result.update(ticker=symbol, expiry=expiry, dte=dte, spot=spot, rv21=rv, rv63=rv63,
                   price_date=price_date.isoformat() if price_date else None,

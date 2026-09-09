@@ -148,9 +148,25 @@ def _momentum_regime(closes):
     return "中性震荡", 0.6, 0.8, (0.30, 0.25, 0.20)
 
 
-def analyze_ticker(ticker, shares, rate):
+def _delta_or_bs(frame, spot, t_years, rate, atm_iv, put=False):
+    """Provider delta when quoted (Alpaca greeks), Black-Scholes otherwise."""
+    quoted = frame["delta"] if "delta" in frame else pd.Series(np.nan, index=frame.index)
+    out = []
+    for k, iv, d in zip(frame.strike, frame.impliedVolatility, quoted):
+        d = abs(float(d)) if pd.notna(d) else None
+        if d is not None and 0.0 < d < 1.0:
+            out.append(d)
+            continue
+        sigma = iv if iv and 0.10 <= iv <= 2.00 else atm_iv
+        call = _bs_call_delta(spot, k, t_years, rate, sigma)
+        out.append(1.0 - call if put else call)
+    return out
+
+
+def analyze_ticker(ticker, shares, rate, t=None, today=None):
     """Full covered-call recommendation for one position. Raises on data errors."""
-    t = yf.Ticker(ticker)
+    import option_data
+    t = t or option_data.ticker(ticker, today=today)
     hist = t.history(period="1y")
     closes = hist["Close"]
     spot = float(closes.iloc[-1])
@@ -161,7 +177,10 @@ def analyze_ticker(ticker, shares, rate):
     trimmed = float(last21[last21.abs().rank(ascending=False) > 3].std() * np.sqrt(252))
 
     earnings = _next_earnings(t)
-    expiry, dte, status = _pick_expiry(t.options, earnings)
+    expirations = list(t.options or ())
+    expiry, dte, status = _pick_expiry(expirations, earnings, today=today)
+    if not expirations:
+        status = "no_chain"
 
     regime, cov_lo, cov_hi, ladder_deltas = _momentum_regime(closes)
     contracts = shares // 100
@@ -183,11 +202,13 @@ def analyze_ticker(ticker, shares, rate):
         "ladder": [],
         "atm_iv": None,
         "exp_move": None,
+        "quote_note": None,
     }
-    if status == "wait" or expiry is None:
+    if status in ("wait", "no_chain") or expiry is None:
         return result
 
     chain = t.option_chain(expiry)
+    result["quote_note"] = option_data.quote_note(chain)
     calls = chain.calls
     # Quote sanity + liquidity floor: keeps a stale/crossed quote or a dead
     # strike from landing in the recommendation ladder.
@@ -199,18 +220,13 @@ def analyze_ticker(ticker, shares, rate):
         result["status"] = "wait"
         return result
 
-    atm_idx = (chain.calls.strike - spot).abs().idxmin()
-    result["atm_iv"] = float(chain.calls.loc[atm_idx, "impliedVolatility"])
+    result["atm_iv"] = option_data.atm_iv(chain.calls, spot, fallback=trimmed)
 
     t_years = dte / 365
     result["exp_move"] = spot * result["atm_iv"] * sqrt(t_years)
-    # yfinance per-strike IVs are occasionally stale garbage; clamp to a
-    # plausible band and fall back to ATM IV outside it.
-    calls["delta"] = [
-        _bs_call_delta(spot, k, t_years, rate,
-                       iv if iv and 0.10 <= iv <= 1.50 else result["atm_iv"])
-        for k, iv in zip(calls.strike, calls.impliedVolatility)
-    ]
+    # Per-strike IVs are occasionally stale garbage; clamp to a plausible band
+    # and fall back to ATM IV outside it. Quoted greeks win when available.
+    calls["delta"] = _delta_or_bs(calls, spot, t_years, rate, result["atm_iv"])
 
     used = set()
     for target in ladder_deltas:
@@ -247,6 +263,10 @@ def _format_ticker_section(r):
         + f" | 下次财报 **{earn}**\n"
     )
 
+    if r["status"] == "no_chain":
+        lines.append("> ⚠️ **期权链不可用**：数据源没有返回任何到期日，本期不给合约。"
+                     "股票仓位照常持有，下次运行再看。\n")
+        return "\n".join(lines)
     if r["status"] == "wait" or not r["ladder"]:
         lines.append("> ⚠️ **建议观望**：所有 25+ DTE 到期日均跨越财报（或期权数据不可用）。"
                      "等财报后 IV crush 落地 3-5 天再开新仓。\n")
@@ -287,7 +307,38 @@ def _format_ticker_section(r):
         lines.append(f"> 管理：成交后立即挂 GTC 买回单（限价 = 成交价 × 50%）；"
                      f"未触发则 **{roll_date}**（剩21天）强制平仓滚动；"
                      f"涨穿行权价则向上+向外滚动，不要放到期。\n")
+    if r.get("quote_note"):
+        lines.append(f"*{r['quote_note']}；下单前重新报价。*\n")
     return "\n".join(lines)
+
+
+def build_covered_call_ladders(positions=None, rate=None, analyzer=None, today=None):
+    """Per-holding covered-call ladders (expiry / delta ladder / mid quotes).
+
+    Returns "" when CC_POSITIONS is unset so the public report carries no
+    personal data. This is the desk that answers "which call, which strike,
+    what price" for the shares actually held; the unified-score block in
+    `build_covered_call_section` sits next to it as a second opinion.
+    """
+    if positions is None:
+        positions = get_positions()
+    if not positions:
+        return ""
+
+    rate = _risk_free_rate() if rate is None else rate
+    analyzer = analyzer or analyze_ticker
+    parts = [
+        "## Covered Call Advisor（持仓期权收租建议）\n",
+        "*规则：45 DTE 开仓 / GTC 50% 止盈或 21 DTE 滚动 / 到期日必须在财报前 / "
+        "趋势强则少覆盖+更远行权价（0.15-0.25Δ），磨底则多覆盖+更近（0.25-0.35Δ）。挂单用 mid 限价。*\n",
+    ]
+    for ticker, shares in positions.items():
+        try:
+            parts.append(_format_ticker_section(analyzer(ticker, shares, rate, today=today)))
+        except Exception as e:
+            parts.append(f"### {ticker}\n\n*期权数据获取失败：{e}*\n")
+    parts.append("---\n")
+    return "\n".join(parts)
 
 
 def build_covered_call_section(positions=None, decisions=None):

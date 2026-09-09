@@ -91,6 +91,12 @@ def _fmt(value, digits=1, suffix="%"):
     return f"{n:+.{digits}f}{suffix}"
 
 
+def _short(text, limit):
+    """Visible ellipsis instead of a silent mid-sentence cut."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def next_macro_event(today=None, events=None):
     """Return (event_date, label, days_ahead) or None."""
     today = today or date.today()
@@ -699,7 +705,7 @@ def build_buy_section(ranked, macro_result=None, held=None, today=None):
                 f"{c['score']:.1f}" if c["score"] is not None else "—",
                 _fmt(c["change_1d"]),
                 _fmt(c.get("from_high")),
-                c["buy_note"][:40],
+                _short(c["buy_note"], 60),
             ])
         lines.append(_table(
             ["代码", "评分", "1日", "距高点", "等什么"],
@@ -742,12 +748,15 @@ def build_options_desk_section(ranked, macro_result=None, held=None, today=None)
     if tickets:
         rows = []
         for c in tickets[:12]:
+            note = c["options_note"] or c["stock_note"]
+            if note and note in c["options_label"]:
+                note = c.get("buy_note") or c["stock_note"]  # label already says it
             rows.append([
                 f"**{c['ticker']}**",
                 _fmt(c["change_1d"]),
                 c["stock_label"],
                 c["options_label"],
-                (c["options_note"] or c["stock_note"])[:60],
+                _short(note, 90),
             ])
         lines.append("### 今日票据\n")
         lines.append(_table(

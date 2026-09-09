@@ -16,7 +16,7 @@ from pathlib import Path
 
 def generate_report(scored_results, output_dir="reports", macro_result=None,
                     discovery_result=None, options_decisions=None,
-                    sell_put_plan=None):
+                    sell_put_plan=None, ai_portfolio=None):
     """
     Generate a comprehensive Markdown recommendation report.
 
@@ -28,6 +28,8 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
         discovery_result: dict from stock_discovery.discover_stocks() (optional)
         sell_put_plan: dict from ai_sell_put_plan.build_plan() (optional; built
             here when omitted so the AI sell-put desk always renders)
+        ai_portfolio: optional dict that receives ai_portfolio.build() output so
+            the caller can reuse it for the email digest
 
     Returns:
         (report_path, report_content) tuple
@@ -65,10 +67,19 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
     if sell_put_plan and not sell_put_plan.get("error"):
         plan_path = Path(output_dir) / f"ai_sell_put_plan_{timestamp}.json"
         plan_path.write_text(json.dumps(sell_put_plan, ensure_ascii=False, indent=2, default=str))
+    try:
+        import ai_portfolio as ai_portfolio_desk
+        portfolio = ai_portfolio_desk.build(
+            ranked, macro_result=macro_result,
+            sell_put_plan=None if (sell_put_plan or {}).get("error") else sell_put_plan)
+    except Exception as e:
+        portfolio = {"error": str(e)}
+    if ai_portfolio is not None:
+        ai_portfolio.update(portfolio)
     report = _build_report(ranked, macro_result=macro_result,
                           discovery_result=discovery_result,
                           options_research_section=options_section,
-                          sell_put_plan=sell_put_plan)
+                          sell_put_plan=sell_put_plan, ai_portfolio=portfolio)
 
     Path(report_path).write_text(report, encoding="utf-8")
     from report_format import render_html
@@ -78,7 +89,7 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
 
 
 def _build_report(ranked, macro_result=None, discovery_result=None, options_research_section="",
-                  sell_put_plan=None):
+                  sell_put_plan=None, ai_portfolio=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total = len(ranked)
 
@@ -127,19 +138,41 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 
     decisions = {r['ticker']:r['options_decision'] for r in ranked if r.get('options_decision') is not None}
 
-    # Covered-call advisor for held shares (CC_POSITIONS env; empty when unset)
+    # AI Portfolio: the separately watched core AI list (roll-up, no new fetches)
+    try:
+        import ai_portfolio as ai_portfolio_desk
+        if ai_portfolio is None:
+            ai_portfolio = ai_portfolio_desk.build(ranked, macro_result=macro_result,
+                                                   sell_put_plan=sell_put_plan)
+        if ai_portfolio.get("error"):
+            raise RuntimeError(ai_portfolio["error"])
+        ai_portfolio_section = ai_portfolio_desk.build_section(ai_portfolio)
+    except Exception as e:
+        ai_portfolio_section = f"## AI Portfolio — 核心 AI 名单\n\n*Section failed: {e}*\n\n---\n"
+
+    # Covered-call advisor for held shares (CC_POSITIONS env; empty when unset):
+    # per-holding ladders first, then the unified-score second opinion.
     try:
         import covered_call_advisor
-        cc_section = covered_call_advisor.build_covered_call_section(decisions=decisions)
+        cc_section = covered_call_advisor.build_covered_call_ladders()
     except Exception as e:
-        cc_section = f"## Covered Call Advisor\n\n*Section failed: {e}*\n\n---\n"
+        cc_section = f"## Covered Call Advisor（持仓期权收租建议）\n\n*Section failed: {e}*\n\n---\n"
+    try:
+        cc_section += "\n" + covered_call_advisor.build_covered_call_section(decisions=decisions)
+    except Exception as e:
+        cc_section += f"\n## Covered Call — 统一评分候选\n\n*Section failed: {e}*\n\n---\n"
 
-    # Sell-put radar: scan the whole universe for panic-drop premium setups
+    # Sell-put radar: scan the whole universe for panic-drop premium setups,
+    # then the unified-score cash-secured put candidates.
     try:
         import sell_put_advisor
-        sp_section = sell_put_advisor.build_sell_put_section(ranked, decisions=decisions)
+        sp_section = sell_put_advisor.build_sell_put_radar(ranked)
     except Exception as e:
-        sp_section = f"## Sell Put 雷达\n\n*Section failed: {e}*\n\n---\n"
+        sp_section = f"## Sell Put 雷达（大跌收租机会）\n\n*Section failed: {e}*\n\n---\n"
+    try:
+        sp_section += "\n" + sell_put_advisor.build_sell_put_section(ranked, decisions=decisions)
+    except Exception as e:
+        sp_section += f"\n## Cash-secured Put — 统一评分候选\n\n*Section failed: {e}*\n\n---\n"
 
     # AI 持有标的 sell-put plan: fixed AI watch list, answered every day
     try:
@@ -177,6 +210,8 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 {trend_section}
 
 {macro_desk}
+
+{ai_portfolio_section}
 
 {buy_section}
 
@@ -520,7 +555,9 @@ def _build_bottom_20(ranked):
         sr = r["score_result"]
         name = r.get("name", r["ticker"])[:20]
         reasons = sr.get("reasoning", [])
-        issue = reasons[0][:60] if reasons else "暂无原因摘要"
+        issue = reasons[0] if reasons else "暂无原因摘要"
+        if len(issue) > 80:
+            issue = issue[:79] + "…"
         section += (
             f"| {i} | **{r['ticker']}** | {name} "
             f"| {sr['score']:.1f} | {sr['grade']} "
