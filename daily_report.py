@@ -97,12 +97,14 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
     # Generate report (after trading, so portfolio section shows post-trade state)
     options_decisions = {}
     ai_portfolio_data = {}
+    saas_watch_data = {}
     report_path, _ = report_generator.generate_report(
         results, output_dir="reports", macro_result=macro_result,
         discovery_result=discovery_result,
         options_decisions=options_decisions,
         sell_put_plan=sell_put_plan,
         ai_portfolio=ai_portfolio_data,
+        saas_watch=saas_watch_data,
     )
     print(f"\nReport saved: {report_path}")
 
@@ -110,8 +112,10 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
     top_picks = [r for r in results if r["score_result"]["recommendation"] in ("Strong Buy", "Buy")]
     reduces = [r for r in results if r["score_result"]["recommendation"] in ("Reduce", "Avoid")]
 
+    data_as_of = max((r.get("data_as_of") for r in results if r.get("data_as_of")), default="未知")
     summary_lines = [
         f"Daily Stock Analysis — {date_str}",
+        f"数据截至: {data_as_of}（最近一根完整日线收盘）",
         f"Stocks analyzed: {len(results)}",
         "",
     ]
@@ -147,6 +151,10 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
         if ai_portfolio_data and not ai_portfolio_data.get("error"):
             import ai_portfolio
             summary_lines.extend(ai_portfolio.email_lines(ai_portfolio_data))
+            summary_lines.append("")
+        if saas_watch_data and not saas_watch_data.get("error"):
+            import saas_watch
+            summary_lines.extend(saas_watch.email_lines(saas_watch_data))
             summary_lines.append("")
         summary_lines.extend(
             daily_watch.email_watch_lines(

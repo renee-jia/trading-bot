@@ -9,9 +9,9 @@ Raw HTML from report text is escaped, and unsafe link schemes are rejected by
 the Markdown parser. No scripts, remote fonts, or other assets are needed.
 
 Reading order: overview, General and cash plan, macro desk, the AI Portfolio
-roll-up (`AI_PORTFOLIO.md`), stock and options actions (covered-call ladders for
-held shares, the sell-put radar, their unified-score second opinions, and the
-AI 持有标的 Sell Put 方案 desk, see `AI_SELL_PUT_PLAN.md`), rankings and
+roll-up (`AI_PORTFOLIO.md`), the SaaS Watch list (`SAAS_WATCH.md`), stock and options actions (covered-call ladders for
+the `CC_WATCH` list, the sell-put radar, their unified-score second opinions, and the
+AI 标的 Sell Put 方案 desk, see `AI_SELL_PUT_PLAN.md`), rankings and
 allocation, research/methodology, individual details.
 
 Single newlines inside a paragraph render as line breaks (`breaks=True`), so the
@@ -50,7 +50,7 @@ score promotion, consistent per-name option labels in the email summary, the
 AI Portfolio placement, and that the email digest stays under the Gmail budget
 while keeping the decision desks (it also writes `*_email.html`).
 Unavailable option snapshots must remain unavailable in the replay. Covered-call
-ladders (personal holdings) are blanked and the sell-put radar's chain fetch is
+ladders (`CC_WATCH`) are blanked and the sell-put radar's chain fetch is
 disabled during validation.
 
 Replay a saved sample without network access:
@@ -70,3 +70,11 @@ The 2026-09-08 sample covers 20 sections, 41 tables, 16 stock details and 8
 option requests (4 usable; CVX, UNH, JNJ and CAT unavailable). Tests: 181 passed.
 The dependency and Docker copy list include the shared renderer and the related
 cash, score and options modules; deployment itself is outside this validation.
+
+## Privacy
+
+Nothing in the report or email may let a reader infer the author's assets.
+The cash entry plan is expressed only as percentages of an unnamed pool, the
+covered-call desk works from a ticker watch list with no share or contract
+counts, and no desk reads broker positions: `sell_put_advisor.held_tickers()`
+is always empty, so no name is ever marked, excluded or sized as "held".

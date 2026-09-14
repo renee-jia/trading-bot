@@ -1,4 +1,4 @@
-"""Offline tests for the AI 持有标的 Sell Put 方案 desk. No network."""
+"""Offline tests for the AI 标的 Sell Put 方案 desk. No network."""
 import os
 import sys
 from datetime import date, timedelta
@@ -134,13 +134,14 @@ def test_section_and_email_render_all_names():
     plan = _plan([_row("AVGO"), _row("MSFT", score=55, d1=0.3, rsi=63, from_high=-2.0)],
                  {"AVGO": _snapshot(), "MSFT": _snapshot()})
     md = ap.build_section(plan)
-    assert md.startswith("## AI 持有标的 Sell Put 方案")
+    assert md.startswith("## AI 标的 Sell Put 方案")
+    assert "持仓" not in md and "持有" not in md
     assert "| **AVGO** |" in md and "| **MSFT** |" in md
     assert "2026-10-16（38d）卖 $92P @ **$1.84**" in md
     assert "### AVGO（AVGO）" in md and "首选：**$92 put" in md
     for line in md.splitlines():
         if line.startswith("|") and not line.startswith("|---"):
-            assert line.count("|") in (12, 13)  # summary (11 cols) / ladder (12 cols)
+            assert line.count("|") in (11, 13)  # summary (10 cols) / ladder (12 cols)
     lines = ap.email_lines(plan)
     assert lines[0] == "=== AI SELL PUT 方案 ==="
     assert any(l.strip().startswith("AVGO") and "$92P" in l for l in lines)

@@ -29,3 +29,4 @@ reports/
 # Claude — keep the multi-agent skill definitions, drop everything else
 .claude/*
 !.claude/skills/
+.DS_Store

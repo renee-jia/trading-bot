@@ -1,9 +1,11 @@
 """
-Covered-call advisor: daily DTE + strike/price recommendations for held shares.
+Covered-call advisor: daily DTE + strike/price ladders for a fixed watch list.
 
-Positions come from the CC_POSITIONS env var, e.g. "META:210,GOOGL:1000".
-When unset the section is skipped entirely, so the public harness never
-carries personal holdings.
+Names come from the CC_WATCH env var (comma-separated tickers, e.g.
+"META,GOOGL,NVDA"). The report deliberately knows nothing about what is
+actually held: no share counts, no contract counts, no "held" marks, so
+nothing in the output can be used to infer a reader's positions. Coverage is
+expressed as a ratio only. When CC_WATCH is unset the section is skipped.
 
 Strategy rules (calibrated 2026-08-03):
 - Open at 30-55 DTE, targeting ~45; prefer monthly (3rd-Friday) expiries
@@ -26,6 +28,7 @@ from datetime import datetime, timedelta
 from math import erf, log, sqrt
 
 import numpy as np
+import market_bars
 import pandas as pd
 import yfinance as yf
 
@@ -47,24 +50,24 @@ def _bs_call_delta(spot, strike, t_years, rate, sigma):
     return _norm_cdf(d1)
 
 
-def get_positions():
-    """Parse CC_POSITIONS ("META:210,GOOGL:1000") into {ticker: shares}."""
-    raw = os.environ.get("CC_POSITIONS", "").strip()
-    positions = {}
+def watch_tickers():
+    """Parse CC_WATCH ("META,GOOGL,NVDA") into an ordered ticker list.
+
+    Falls back to the legacy CC_POSITIONS variable but keeps only the tickers;
+    any ":shares" suffix is discarded and never reaches the report.
+    """
+    raw = os.environ.get("CC_WATCH", "").strip() or os.environ.get("CC_POSITIONS", "").strip()
+    out = []
     for part in raw.split(","):
-        if ":" not in part:
-            continue
-        ticker, _, shares = part.partition(":")
-        try:
-            positions[ticker.strip().upper()] = int(shares)
-        except ValueError:
-            continue
-    return positions
+        ticker = part.partition(":")[0].strip().upper()
+        if ticker and ticker not in out:
+            out.append(ticker)
+    return out
 
 
 def _risk_free_rate():
     try:
-        irx = yf.Ticker("^IRX").history(period="5d")["Close"]
+        irx = market_bars.drop_unfinished_bars(yf.Ticker("^IRX").history(period="5d"))["Close"]
         if len(irx):
             return float(irx.iloc[-1]) / 100
     except Exception:
@@ -163,8 +166,14 @@ def _delta_or_bs(frame, spot, t_years, rate, atm_iv, put=False):
     return out
 
 
-def analyze_ticker(ticker, shares, rate, t=None, today=None):
-    """Full covered-call recommendation for one position. Raises on data errors."""
+def analyze_ticker(ticker, shares=None, rate=None, t=None, today=None):
+    """Full covered-call ladder for one name. Raises on data errors.
+
+    `shares` is accepted for call compatibility and ignored: position size is
+    never used, so the output cannot leak it.
+    """
+    if rate is None:
+        rate = _risk_free_rate()
     import option_data
     t = t or option_data.ticker(ticker, today=today)
     hist = t.history(period="1y")
@@ -183,12 +192,9 @@ def analyze_ticker(ticker, shares, rate, t=None, today=None):
         status = "no_chain"
 
     regime, cov_lo, cov_hi, ladder_deltas = _momentum_regime(closes)
-    contracts = shares // 100
 
     result = {
         "ticker": ticker,
-        "shares": shares,
-        "contracts": contracts,
         "spot": spot,
         "rv21": rv21,
         "rv_trimmed": trimmed,
@@ -197,8 +203,8 @@ def analyze_ticker(ticker, shares, rate, t=None, today=None):
         "dte": dte,
         "status": status,
         "regime": regime,
-        "cover_lo": max(1, round(contracts * cov_lo)) if contracts else 0,
-        "cover_hi": max(1, round(contracts * cov_hi)) if contracts else 0,
+        "cover_frac_lo": cov_lo,
+        "cover_frac_hi": cov_hi,
         "ladder": [],
         "atm_iv": None,
         "exp_move": None,
@@ -253,7 +259,8 @@ def analyze_ticker(ticker, shares, rate, t=None, today=None):
 
 
 def _format_ticker_section(r):
-    lines = [f"### {r['ticker']} — {r['shares']} 股（可卖 {r['contracts']} 张）\n"]
+    # No position data exists here: the report only gives a coverage ratio.
+    lines = [f"### {r['ticker']}\n"]
     earn = r["earnings"].strftime("%Y-%m-%d") if r["earnings"] else "未知"
     iv_txt = f"{r['atm_iv']*100:.0f}%" if r["atm_iv"] else "-"
     vrp = (r["atm_iv"] - r["rv_trimmed"]) * 100 if r["atm_iv"] else None
@@ -265,7 +272,7 @@ def _format_ticker_section(r):
 
     if r["status"] == "no_chain":
         lines.append("> ⚠️ **期权链不可用**：数据源没有返回任何到期日，本期不给合约。"
-                     "股票仓位照常持有，下次运行再看。\n")
+                     "下次运行再看。\n")
         return "\n".join(lines)
     if r["status"] == "wait" or not r["ladder"]:
         lines.append("> ⚠️ **建议观望**：所有 25+ DTE 到期日均跨越财报（或期权数据不可用）。"
@@ -274,13 +281,18 @@ def _format_ticker_section(r):
 
     if vrp is not None and vrp < VRP_THIN_PT:
         lines.append(f"> ⚠️ **权利金偏薄**：IV 低于真实波动率 {abs(vrp):.0f}pt，不能单凭此项确认卖方优势。"
-                     "本期建议只覆盖下限张数，或跳过等 IV 回升。\n")
+                     "本期建议只覆盖下限比例，或跳过等 IV 回升。\n")
 
     dte_note = "（标准 45 天窗口）" if r["status"] == "ok" else "（财报临近，被迫缩短周期）"
     exp_date = datetime.strptime(r["expiry"], "%Y-%m-%d").date()
     roll_date = exp_date - timedelta(days=21)
-    cover = (f"{r['cover_lo']} 张" if r["cover_lo"] == r["cover_hi"]
-             else f"{r['cover_lo']}-{r['cover_hi']} 张")
+    lo, hi = r.get("cover_frac_lo"), r.get("cover_frac_hi")
+    if lo is None or hi is None:
+        cover = "按动量状态"
+    elif lo == hi:
+        cover = f"约 {lo * 100:.0f}%"
+    else:
+        cover = f"约 {lo * 100:.0f}–{hi * 100:.0f}%"
     em_note = ""
     if r.get("exp_move"):
         em = r["exp_move"]
@@ -288,7 +300,7 @@ def _format_ticker_section(r):
                    f"（{em/r['spot']*100:.1f}%）")
     lines.append(
         f"**推荐到期日：{r['expiry']}（{r['dte']} DTE）**{dte_note} | "
-        f"动量状态：{r['regime']} → 建议覆盖 **{cover}**{em_note}\n"
+        f"动量状态：{r['regime']} → 覆盖比例 **{cover}**{em_note}\n"
     )
     lines.append("Delta 是价格敏感度，不是已验证的行权或盈利概率。\n")
     lines.append("| 行权价 | OTM | Delta | Bid/Ask | **挂单价(mid)** | 权利金/张 | 收益率 | 年化 | OI |")
@@ -313,28 +325,29 @@ def _format_ticker_section(r):
 
 
 def build_covered_call_ladders(positions=None, rate=None, analyzer=None, today=None):
-    """Per-holding covered-call ladders (expiry / delta ladder / mid quotes).
+    """Covered-call ladders (expiry / delta ladder / mid quotes) per watched name.
 
-    Returns "" when CC_POSITIONS is unset so the public report carries no
-    personal data. This is the desk that answers "which call, which strike,
-    what price" for the shares actually held; the unified-score block in
+    `positions` is any iterable of tickers (a dict is iterated by key; values
+    are ignored). Returns "" when CC_WATCH is unset. This desk answers "which
+    call, which strike, what price"; the unified-score block in
     `build_covered_call_section` sits next to it as a second opinion.
     """
     if positions is None:
-        positions = get_positions()
+        positions = watch_tickers()
     if not positions:
         return ""
 
     rate = _risk_free_rate() if rate is None else rate
     analyzer = analyzer or analyze_ticker
     parts = [
-        "## Covered Call Advisor（持仓期权收租建议）\n",
+        "## Covered Call Advisor（写 call 到期日 / 行权价参考）\n",
+        "固定名单（`CC_WATCH`）每天给出到期日、行权价阶梯和挂单价；覆盖比例是相对比例，本栏不含任何仓位信息。\n",
         "*规则：45 DTE 开仓 / GTC 50% 止盈或 21 DTE 滚动 / 到期日必须在财报前 / "
         "趋势强则少覆盖+更远行权价（0.15-0.25Δ），磨底则多覆盖+更近（0.25-0.35Δ）。挂单用 mid 限价。*\n",
     ]
-    for ticker, shares in positions.items():
+    for ticker in positions:
         try:
-            parts.append(_format_ticker_section(analyzer(ticker, shares, rate, today=today)))
+            parts.append(_format_ticker_section(analyzer(ticker, None, rate, today=today)))
         except Exception as e:
             parts.append(f"### {ticker}\n\n*期权数据获取失败：{e}*\n")
     parts.append("---\n")
@@ -352,5 +365,5 @@ def build_covered_call_section(positions=None, decisions=None):
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("CC_POSITIONS", "META:210,GOOGL:1000")
+    os.environ.setdefault("CC_WATCH", "META,GOOGL")
     print(build_covered_call_section())

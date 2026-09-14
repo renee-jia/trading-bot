@@ -140,7 +140,7 @@ def build_section(ranked, macro_result=None, analyzer=None, held=None, today=Non
     import daily_watch
     cards, event = daily_watch.annotate(
         ranked, held=held, today=today, tape=(macro_result or {}).get('macro_tape'))
-    cards = sorted(cards, key=lambda c: (not c['held'], -abs((c.get('score') if c.get('score') is not None else 50)-50)))
+    cards = sorted(cards, key=lambda c: -abs((c.get('score') if c.get('score') is not None else 50)-50))
     selected, seen = [], set()
     for card in cards:
         if card.get('levered'):
@@ -151,7 +151,7 @@ def build_section(ranked, macro_result=None, analyzer=None, held=None, today=Non
         if len(selected) == MAX_NAMES:
             break
     lines = ['## Options Research — 期权链信号\n',
-             '持仓优先，其次方向强度（含看空），最多 8 只；前月 25–45 DTE、远月 55–90 DTE。研究快照，不是下单指令。\n',
+             '按方向强度（含看空）排序，最多 8 只；前月 25–45 DTE、远月 55–90 DTE。研究快照，不是下单指令。\n',
              '| 股票 / 到期 | ATM IV / RV21 / RV63 | IV÷RV21 / RV63 | 预期 ±波动 | 5%偏斜 | 远−近 IV | P/C量比 | ATM价差 | 研究方向 |',
              '|---|---|---|---|---|---|---|---|---|']
     from options_decision import evaluate, label, render_tickets

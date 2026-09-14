@@ -156,12 +156,13 @@ def test_covered_call_ladders_section_and_no_chain_text():
         return cca.analyze_ticker(ticker, shares, rate, t=t, today=TODAY)
     md = cca.build_covered_call_ladders({"ABC": 300}, rate=0.04, analyzer=analyzer, today=TODAY)
     assert md.startswith("## Covered Call Advisor")
-    assert "### ABC — 300 股（可卖 3 张）" in md
+    assert "### ABC\n" in md and "300" not in md and "可卖" not in md and "张）" not in md
+    assert "覆盖比例 **约" in md and "持仓" not in md and "持有" not in md
     assert "推荐到期日：2026-10-16" in md and "| 行权价 |" in md and "Alpaca" in md
     assert cca.build_covered_call_ladders({}, rate=0.04) == ""
-    r = {"ticker": "ABC", "shares": 100, "contracts": 1, "spot": 100.0, "rv21": .3, "rv_trimmed": .28,
+    r = {"ticker": "ABC", "spot": 100.0, "rv21": .3, "rv_trimmed": .28,
          "earnings": None, "expiry": None, "dte": None, "status": "no_chain", "regime": "中性震荡",
-         "cover_lo": 1, "cover_hi": 1, "ladder": [], "atm_iv": None, "exp_move": None, "quote_note": None}
+         "cover_frac_lo": .6, "cover_frac_hi": .8, "ladder": [], "atm_iv": None, "exp_move": None, "quote_note": None}
     assert "期权链不可用" in cca._format_ticker_section(r)
 
 

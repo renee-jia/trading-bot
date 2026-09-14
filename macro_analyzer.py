@@ -18,6 +18,7 @@ import re
 from datetime import datetime
 
 import pandas as pd
+import market_bars
 import numpy as np
 import yfinance as yf
 
@@ -140,6 +141,7 @@ def _fetch_market_data():
     for ticker, name in tickers.items():
         try:
             df = yf.Ticker(ticker).history(period="1y", interval="1d")
+            df = market_bars.drop_unfinished_bars(df)
             if df is not None and not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.droplevel(1)

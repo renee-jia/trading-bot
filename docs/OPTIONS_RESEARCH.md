@@ -54,8 +54,8 @@ are descriptive; neither is converted into buying/selling direction.
 
 A strong uptrend no longer automatically triggers covered calls, and a low stock
 score is not a naked-call sell signal. A high composite stock score or a large
-drop alone cannot authorize a put sale. Existing holdings do not get additional
-short-put candidates.
+drop alone cannot authorize a put sale. The report carries no holdings information, so
+no name is ever marked, excluded or sized as held.
 
 Unknown/crossing earnings (including a two-day buffer), unknown macro-calendar
 coverage, event blackout, missing RV or missing/stale underlying bar dates block

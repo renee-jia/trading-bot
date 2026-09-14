@@ -72,16 +72,21 @@ def test_momentum_regime():
     assert "中性" in regime and (lo, hi) == (0.6, 0.8)
 
 
-def test_position_parsing():
+def test_watch_list_parsing_drops_share_counts():
     cases = [
-        ("META:210,GOOGL:1000", {"META": 210, "GOOGL": 1000}),
-        ("", {}),
-        ("META:abc,GOOGL:1000", {"GOOGL": 1000}),
-        (" meta:210 , googl:1000 ", {"META": 210, "GOOGL": 1000}),
+        ("META,GOOGL", ["META", "GOOGL"]),
+        ("", []),
+        (" meta , googl ,meta", ["META", "GOOGL"]),
+        ("META:210,GOOGL:1000", ["META", "GOOGL"]),   # legacy form: share counts discarded
     ]
     for raw, want in cases:
-        os.environ["CC_POSITIONS"] = raw
-        assert cca.get_positions() == want, raw
+        os.environ["CC_WATCH"] = raw
+        os.environ.pop("CC_POSITIONS", None)
+        assert cca.watch_tickers() == want, raw
+    os.environ.pop("CC_WATCH", None)
+    os.environ["CC_POSITIONS"] = "META:210,GOOGL:1000"
+    assert cca.watch_tickers() == ["META", "GOOGL"]
+    os.environ.pop("CC_POSITIONS", None)
 
 
 if __name__ == "__main__":

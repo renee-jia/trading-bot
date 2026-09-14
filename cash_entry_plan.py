@@ -1,4 +1,9 @@
-"""User's $400k cash deployment plan: cumulative targets, never broker orders."""
+"""Report-only entry plan for the user's separate cash pool.
+
+Everything is a percentage of that pool (0-100). The pool size is never written
+into code, configuration or the report; the reader converts locally.
+Cumulative targets, never broker orders.
+"""
 from datetime import date, timedelta
 import math
 
@@ -7,15 +12,22 @@ import pandas as pd
 
 PLAN_START = date(2026, 9, 8)
 REVIEW_DATE = date(2026, 10, 15)
-BUDGET = 400_000
-# name, minimum VIX, minimum drawdown %, cumulative deployment target
+FULL = 100.0        # the whole pool, in percent
+WEEKLY_STEP = 12.5  # time rule: cumulative target added per elapsed week
+BATCH_CAP = 25.0    # one review batch never exceeds this share of the pool
+# name, minimum VIX, minimum drawdown %, cumulative deployment target (% of pool)
 TIERS = (
-    ('普通回调',18,3,50_000),
-    ('第一买点',20,5,125_000),
-    ('⭐ 好买点',23,8,225_000),
-    ('⭐⭐ 恐慌',27,10,325_000),
-    ('⭐⭐⭐ 大跌',30,15,400_000),
+    ('普通回调',18,3,12.5),
+    ('第一买点',20,5,31.25),
+    ('⭐ 好买点',23,8,56.25),
+    ('⭐⭐ 恐慌',27,10,81.25),
+    ('⭐⭐⭐ 大跌',30,15,100.0),
 )
+
+
+def _p(v):
+    """Percent-of-pool formatter: 12.5 -> '12.5%', 100.0 -> '100%'."""
+    return f"{v:g}%"
 
 
 def _session_dates(index):
@@ -89,18 +101,19 @@ def snapshot_from_history(spx, vix, as_of=None):
             'vix_implied_30d_move_pct':level*math.sqrt(30/365)}
 
 
-def evaluate(snapshot, deployed=0, today=None, capital_as_of=PLAN_START):
-    """deployed is cumulative *confirmed* spend from this separate cash pool.
+def evaluate(snapshot, deployed_pct=0, today=None, capital_as_of=PLAN_START):
+    """deployed_pct is the cumulative *confirmed* spend, as a percent of the pool.
 
     Target minus declared spend is an outstanding plan gap, never a daily order.
     Repeated runs cannot increment this number or assume earlier orders happened.
     """
     today=today or date.today()
-    if not isinstance(deployed,(int,float)) or not math.isfinite(deployed) or not 0<=deployed<=BUDGET:
-        raise ValueError('累计已投入必须介于0与400000之间')
-    result={'status':'wait','tier':'等待','target_deployed':deployed,'declared_deployed':deployed,
-            'declared_cash':BUDGET-deployed,'target_cash':BUDGET-deployed,
-            'gap':0,'next_batch_cap':0,'capital_as_of':capital_as_of.isoformat(),
+    deployed=deployed_pct
+    if not isinstance(deployed,(int,float)) or not math.isfinite(deployed) or not 0<=deployed<=FULL:
+        raise ValueError('累计已投入比例必须介于 0 与 100 之间')
+    result={'status':'wait','tier':'等待','target_pct':deployed,'declared_pct':deployed,
+            'declared_cash_pct':FULL-deployed,'target_cash_pct':FULL-deployed,
+            'gap_pct':0,'next_batch_cap_pct':0,'capital_as_of':capital_as_of.isoformat(),
             'capital_needs_confirmation':capital_as_of!=today,
             'reason':'','snapshot':snapshot}
     if snapshot.get('status')!='ok':
@@ -124,12 +137,12 @@ def evaluate(snapshot, deployed=0, today=None, capital_as_of=PLAN_START):
     matched=[t for t in TIERS if vix>=t[1] and -dd>=t[2]]
     if matched:
         tier=matched[-1]
-        result.update(tier=tier[0],target_deployed=tier[3],status='conditional')
-        result['reason']='VIX 与 SPX 回撤同时达到该档下限；金额为累计投入目标。'
+        result.update(tier=tier[0],target_pct=tier[3],status='conditional')
+        result['reason']='VIX 与 SPX 回撤同时达到该档下限；比例为累计投入目标。'
     elif today>=REVIEW_DATE and vix<18 and -dd<3 and snapshot.get('dip_seen_since_start') is False:
         weeks=(today-REVIEW_DATE).days//7+1
-        result.update(tier='时间止等：逐步买回',target_deployed=min(BUDGET,weeks*50_000),status='conditional')
-        result['reason']='已到10月15日，计划以来未出现3%回撤；改为每周累计增加$50k目标，仍按已投入额补差。'
+        result.update(tier='时间止等：逐步买回',target_pct=min(FULL,weeks*WEEKLY_STEP),status='conditional')
+        result['reason']=f'已到10月15日，计划以来未出现3%回撤；改为每周累计增加现金池 {_p(WEEKLY_STEP)} 的目标，仍按已投入比例补差。'
     else:
         vix_tier=max([i for i,t in enumerate(TIERS,1) if vix>=t[1]],default=0)
         dd_tier=max([i for i,t in enumerate(TIERS,1) if -dd>=t[2]],default=0)
@@ -142,30 +155,30 @@ def evaluate(snapshot, deployed=0, today=None, capital_as_of=PLAN_START):
         if today>=REVIEW_DATE and snapshot.get('dip_seen_since_start') is not False:
             result['reason']+='期间曾发生回撤或路径未确认，不自动套用“始终没跌”的时间规则；复核已执行金额。'
     # Never imply selling to restore cash if a rebound downgrades the current tier.
-    result['target_deployed']=max(deployed,result['target_deployed'])
-    result['target_cash']=BUDGET-result['target_deployed']
-    result['gap']=max(0,result['target_deployed']-deployed)
-    result['next_batch_cap']=min(100_000,result['gap'])
-    if not result['gap'] and result['status']=='conditional':
-        result['status']='funded';result['reason']+='声明已投入额已达到目标，不重复买入。'
-    if result['gap']>100_000:
-        result['reason']+='跨档跳跌时不一次补齐：单轮参考上限$100k，余款分步复核。'
+    result['target_pct']=max(deployed,result['target_pct'])
+    result['target_cash_pct']=FULL-result['target_pct']
+    result['gap_pct']=max(0,result['target_pct']-deployed)
+    result['next_batch_cap_pct']=min(BATCH_CAP,result['gap_pct'])
+    if not result['gap_pct'] and result['status']=='conditional':
+        result['status']='funded';result['reason']+='声明已投入比例已达到目标，不重复买入。'
+    if result['gap_pct']>BATCH_CAP:
+        result['reason']+=f'跨档跳跌时不一次补齐：单轮参考上限为现金池 {_p(BATCH_CAP)}，余款分步复核。'
     return result
 
 
 def render(plan):
     snap=plan['snapshot']
-    lines=['### $400k Cash — VIX × SPX 分批入场计划\n',
-           '这是单独的现金入场预算；金额是累计计划，不是 Alpaca 账户余额或自动交易指令。\n',
+    lines=['### 现金入场计划 — VIX × SPX 分批入场\n',
+           '这是单独的现金入场预算，全部按现金池百分比表示（金额自行换算，不写入报告）；比例是累计计划，不是 Alpaca 账户余额或自动交易指令。\n',
            '| 市场条件 | VIX 参考 | SPX 距高点 | 该档新增 | 累计投入目标 | 目标剩余现金 |',
            '|---|---|---|---|---|---|',
-           '| 9/8 用户起始参考 | 15–16 | 接近高位 | 不急 | $0 | $400k |',
-           '| 普通回调 | 18–20 | −3%～−5% | $50k | $50k | $350k |',
-           '| 第一买点 | 20–23 | −5%～−7% | $75k | $125k | $275k |',
-           '| ⭐ 好买点 | 23–27 | −8%～−10% | $100k | $225k | $175k |',
-           '| ⭐⭐ 恐慌 | 27–32 | −10%～−15% | $100k | $325k | $75k |',
-           '| ⭐⭐⭐ 大跌 | ≥30 | ≤−15% | 剩余约$75k | $400k | 约$0 |',
-           '| 10/15 起仍未回调 | <18 | 0～−3%以内 | 每周$50k参考 | 按周递增 | 逐步下降 |','']
+           '| 9/8 用户起始参考 | 15–16 | 接近高位 | 不急 | 0% | 100% |',
+           '| 普通回调 | 18–20 | −3%～−5% | 12.5% | 12.5% | 87.5% |',
+           '| 第一买点 | 20–23 | −5%～−7% | 18.75% | 31.25% | 68.75% |',
+           '| ⭐ 好买点 | 23–27 | −8%～−10% | 25% | 56.25% | 43.75% |',
+           '| ⭐⭐ 恐慌 | 27–32 | −10%～−15% | 25% | 81.25% | 18.75% |',
+           '| ⭐⭐⭐ 大跌 | ≥30 | ≤−15% | 剩余 18.75% | 100% | 0% |',
+           '| 10/15 起仍未回调 | <18 | 0～−3%以内 | 每周 12.5% 参考 | 按周递增 | 逐步下降 |','']
     if snap.get('status')=='ok':
         lines += [f"**当前读数（{snap['as_of']}）：VIX {snap['vix']:.2f}；SPX {snap['spx']:,.2f}；"
                   f"距计划高点 {snap['peak']:,.2f}（{snap['peak_date']}）{snap['drawdown_pct']:+.2f}%。**",
@@ -177,11 +190,11 @@ def render(plan):
         levels='；'.join(f"−{t[2]}% ≈ {snap['peak']*(1-t[2]/100):,.0f}（VIX≥{t[1]}）" for t in TIERS)
         lines += ['', '按当前参考高点换算的 SPX 档位：'+levels+'。创新高后随之上调。']
     lines += ['', f"**当前档位：{plan['tier']}。** {plan['reason']}",
-              f"累计投入目标 **${plan['target_deployed']:,.0f}**；目标剩余现金 **${plan['target_cash']:,.0f}**。",
-              f"截至 {plan['capital_as_of']} 声明已投入 ${plan['declared_deployed']:,.0f}，"
-              f"声明剩余 ${plan['declared_cash']:,.0f}；与当前目标差额 ${plan['gap']:,.0f}。"]
-    if plan['gap']:
-        lines.append(f"若此前投入记录仍准确，本轮参考不超过 ${plan['next_batch_cap']:,.0f}；重复报告不代表再买同一笔。")
+              f"累计投入目标 **{_p(plan['target_pct'])}**；目标剩余现金 **{_p(plan['target_cash_pct'])}**（均为现金池比例）。",
+              f"截至 {plan['capital_as_of']} 声明已投入 {_p(plan['declared_pct'])}，"
+              f"声明剩余 {_p(plan['declared_cash_pct'])}；与当前目标差额 {_p(plan['gap_pct'])}。"]
+    if plan['gap_pct']:
+        lines.append(f"若此前投入记录仍准确，本轮参考不超过现金池 {_p(plan['next_batch_cap_pct'])}；重复报告不代表再买同一笔。")
     if plan['capital_needs_confirmation']:
         lines.append('资金状态不是今日确认值，实际执行前先更新已投入记录；不会把历史声明当成实时可用现金。')
     lines += ['', '执行解释：两项达到下限才进入该档；区间上限不导致退出，7%～8%等间隔沿用已满足的较低档。',
@@ -197,19 +210,19 @@ def from_market_data(market_data, today=None):
     snapshot=((market_data or {}).get('^GSPC') or {}).get('cash_plan_snapshot') or {
         'status':'unavailable','reason':'未取得 SPX/VIX 同期行情；不以 SPY 替代'}
     try:
-        deployed=float(os.environ.get('CASH_PLAN_DEPLOYED','0'))
+        deployed=float(os.environ.get('CASH_PLAN_DEPLOYED_PCT','0'))
         stamp=date.fromisoformat(os.environ.get('CASH_PLAN_CAPITAL_AS_OF',PLAN_START.isoformat()))
         if stamp>(today or date.today()) or stamp<PLAN_START:
             raise ValueError('资金确认日期不在有效范围')
-        return evaluate(snapshot,deployed=deployed,today=today,capital_as_of=stamp)
+        return evaluate(snapshot,deployed_pct=deployed,today=today,capital_as_of=stamp)
     except (TypeError,ValueError):
-        return evaluate({'status':'unavailable','reason':'现金计划资金配置无效，先核对已投入金额和日期'},today=today)
+        return evaluate({'status':'unavailable','reason':'现金计划资金配置无效，先核对已投入比例和日期'},today=today)
 
 
 def email_lines(plan):
-    lines=['=== $400k Cash 入场计划 ===',f"档位：{plan['tier']}；{plan['reason']}"]
+    lines=['=== 现金入场计划 ===',f"档位：{plan['tier']}；{plan['reason']}"]
     snap=plan['snapshot']
     if snap.get('status')=='ok':
         lines.append(f"{snap['as_of']}：VIX {snap['vix']:.2f}，SPX距计划高点 {snap['drawdown_pct']:+.2f}%")
-    lines.append(f"累计投入目标 ${plan['target_deployed']:,.0f}；目标剩余现金 ${plan['target_cash']:,.0f}。非每日重复买入金额。")
+    lines.append(f"累计投入目标 {_p(plan['target_pct'])}；目标剩余现金 {_p(plan['target_cash_pct'])}（现金池比例）。非每日重复买入金额。")
     return lines

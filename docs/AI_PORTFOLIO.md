@@ -29,7 +29,7 @@ It is a roll-up, not a new data pull:
 | Block | Source |
 |---|---|
 | 行情与评分 table: price, 1D/5D/1M/3M, 距高点, RSI, SMA50/SMA200 with the gap to price, score (grade), 评级, Regime | the day's scored rows (`indicators`, `score_result`) |
-| 今日动作 table: 持仓, 涨跌结构, 买入档位, 用多少钱, 买点(回踩/分批/接股), Sell Put 首选, 下次财报 | `daily_watch.annotate` cards (stock / buy / options labels), `ai_sell_put_plan` names (levels, chosen strike, earnings) |
+| 今日动作 table: 涨跌结构, 买入档位, 用多少钱, 买点(回踩/分批/接股), Sell Put 首选, 下次财报 | `daily_watch.annotate` cards (stock / buy / options labels), `ai_sell_put_plan` names (levels, chosen strike, earnings) |
 | 组合概况 / 今日档位 lines | counts across the list: in-run, average score and 1-day move, names above SMA200, held names, buy / scale-in / watch / no-buy buckets, names with a writable put |
 | Per-name bullet | buy note, trend note, put entry note, first two scoring reasons |
 

@@ -1,5 +1,5 @@
 """
-AI 持有标的 Sell Put 方案 — daily cash-secured-put entry plan for a fixed
+AI 标的 Sell Put 方案 — daily cash-secured-put entry plan for a fixed
 list of quality AI names.
 
 Unlike the sell-put radar (which only wakes up on panic drops) this desk
@@ -37,6 +37,7 @@ DEFAULT_WATCH = (
     "NVDA", "TSM", "AMD", "AMAT", "KLAC", "ORCL", "SNPS",
     "GOOGL", "META",  # AI Portfolio names (ai_portfolio.py) that were missing
     "AMZN", "STX", "SNDK", "CRWD", "CRDO", "COHR",  # AI Portfolio 观察名单 additions
+    "CRM", "NOW", "ADBE",  # SaaS Watch 首选 (saas_watch.py)
 )
 
 # Entry gates
@@ -426,7 +427,7 @@ def build_section(plan):
         ev = ev.isoformat() if hasattr(ev, "isoformat") else str(ev)
         nxt = f"下一事件 {ev} {event.get('event_label','')}（{event.get('days')} 天）"
     lines = [
-        "## AI 持有标的 Sell Put 方案\n",
+        "## AI 标的 Sell Put 方案\n",
         "固定名单（`AI_PUT_WATCH`）每天更新：能不能用 sell put 建仓、今天要不要加、加在哪个价、"
         "以及具体到期日 / 行权价 / 挂单价。这一栏是名单式方案，和「Cash-secured Put — 统一评分候选」"
         "并列：那一栏只列通过统一评分的合约，这一栏对每只都给答案。\n",
@@ -441,14 +442,13 @@ def build_section(plan):
     for p in names:
         rsi = f"{p['rsi']:.0f}" if p.get("rsi") is not None else "—"
         score = f"{p['score']:.0f}" if p.get("score") is not None else "—"
-        held = "持有" if p.get("held") else ""
         rows.append([
             f"**{p['ticker']}**", _money(p.get("spot")), _pct(p.get("change_1d")),
-            _pct(p.get("from_high")), rsi, score, held,
+            _pct(p.get("from_high")), rsi, score,
             p["entry_label"], p["today_label"], _levels_txt(p), _pick_txt(p),
         ])
     lines.append(_table(
-        ["代码", "现价", "1日", "距高点", "RSI", "评分", "持仓", "建仓", "今日加仓",
+        ["代码", "现价", "1日", "距高点", "RSI", "评分", "建仓", "今日加仓",
          "买点(回踩/分批/接股)", "Sell Put 首选"], rows))
     lines.append("")
     for p in names:

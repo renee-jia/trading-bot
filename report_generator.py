@@ -16,7 +16,7 @@ from pathlib import Path
 
 def generate_report(scored_results, output_dir="reports", macro_result=None,
                     discovery_result=None, options_decisions=None,
-                    sell_put_plan=None, ai_portfolio=None):
+                    sell_put_plan=None, ai_portfolio=None, saas_watch=None):
     """
     Generate a comprehensive Markdown recommendation report.
 
@@ -30,6 +30,7 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
             here when omitted so the AI sell-put desk always renders)
         ai_portfolio: optional dict that receives ai_portfolio.build() output so
             the caller can reuse it for the email digest
+        saas_watch: optional dict that receives saas_watch.build() output, same idea
 
     Returns:
         (report_path, report_content) tuple
@@ -76,10 +77,20 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
         portfolio = {"error": str(e)}
     if ai_portfolio is not None:
         ai_portfolio.update(portfolio)
+    try:
+        import saas_watch as saas_desk
+        saas = saas_desk.build(
+            ranked, macro_result=macro_result,
+            sell_put_plan=None if (sell_put_plan or {}).get("error") else sell_put_plan)
+    except Exception as e:
+        saas = {"error": str(e)}
+    if saas_watch is not None:
+        saas_watch.update(saas)
     report = _build_report(ranked, macro_result=macro_result,
                           discovery_result=discovery_result,
                           options_research_section=options_section,
-                          sell_put_plan=sell_put_plan, ai_portfolio=portfolio)
+                          sell_put_plan=sell_put_plan, ai_portfolio=portfolio,
+                          saas_watch=saas)
 
     Path(report_path).write_text(report, encoding="utf-8")
     from report_format import render_html
@@ -89,9 +100,10 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
 
 
 def _build_report(ranked, macro_result=None, discovery_result=None, options_research_section="",
-                  sell_put_plan=None, ai_portfolio=None):
+                  sell_put_plan=None, ai_portfolio=None, saas_watch=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total = len(ranked)
+    data_as_of = max((r.get("data_as_of") for r in ranked if r.get("data_as_of")), default="未知")
 
     # Categorize
     strong_buys = [r for r in ranked if r["score_result"]["recommendation"] == "Strong Buy"]
@@ -150,13 +162,25 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
     except Exception as e:
         ai_portfolio_section = f"## AI Portfolio — 核心 AI 名单\n\n*Section failed: {e}*\n\n---\n"
 
-    # Covered-call advisor for held shares (CC_POSITIONS env; empty when unset):
+    # SaaS Watch: fixed software list with the user's star ratings (roll-up, no new fetches)
+    try:
+        import saas_watch as saas_desk
+        if saas_watch is None:
+            saas_watch = saas_desk.build(ranked, macro_result=macro_result,
+                                         sell_put_plan=sell_put_plan)
+        if saas_watch.get("error"):
+            raise RuntimeError(saas_watch["error"])
+        saas_section = saas_desk.build_section(saas_watch)
+    except Exception as e:
+        saas_section = f"## SaaS Watch — 软件 SaaS 名单\n\n*Section failed: {e}*\n\n---\n"
+
+    # Covered-call ladders for the CC_WATCH ticker list (empty when unset; no position data):
     # per-holding ladders first, then the unified-score second opinion.
     try:
         import covered_call_advisor
         cc_section = covered_call_advisor.build_covered_call_ladders()
     except Exception as e:
-        cc_section = f"## Covered Call Advisor（持仓期权收租建议）\n\n*Section failed: {e}*\n\n---\n"
+        cc_section = f"## Covered Call Advisor（写 call 到期日 / 行权价参考）\n\n*Section failed: {e}*\n\n---\n"
     try:
         cc_section += "\n" + covered_call_advisor.build_covered_call_section(decisions=decisions)
     except Exception as e:
@@ -187,11 +211,11 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 
     report = f"""# Trading Bot · 每日策略报告
 
-**生成时间：** {now}（本机时区） · **分析股票：** {total} 只
+**生成时间：** {now}（本机时区） · **数据截至：** {data_as_of}（最近一根完整日线收盘） · **分析股票：** {total} 只
 
 **策略周期：** 数周以上持有；期权另按期限、报价与事件条件筛选。
 
-> 阅读顺序：先看 General 的风险预算与 $400k 现金计划，再看个股入场条件和期权候选。股票评级是综合评分，候选研究分和期权适配分都不是胜率。
+> 阅读顺序：先看 General 的风险预算与现金入场计划，再看个股入场条件和期权候选。股票评级是综合评分，候选研究分和期权适配分都不是胜率。
 
 ---
 
@@ -212,6 +236,8 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 {macro_desk}
 
 {ai_portfolio_section}
+
+{saas_section}
 
 {buy_section}
 
@@ -1002,7 +1028,7 @@ def _build_stock_trend_section(ranked, macro_result=None):
     if outlook.get("current_trend"):
         section += f"{outlook['current_trend']}\n\n"
 
-    section += f"**既有持仓的仓位建议：{stance_label}**\n\n"
+    section += f"**指数仓位建议：{stance_label}**\n\n"
     if outlook.get("sizing_guidance"):
         section += f"{outlook['sizing_guidance']}\n\n"
 

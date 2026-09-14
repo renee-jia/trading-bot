@@ -483,7 +483,6 @@ def _table(headers, rows):
 def _row_for_watch(c):
     rsi = f"{c['rsi']:.0f}" if c["rsi"] is not None else "—"
     score = f"{c['score']:.1f}" if c["score"] is not None else "—"
-    mark = "持有" if c["held"] else ""
     return [
         f"**{c['ticker']}**",
         c["name"][:16],
@@ -491,7 +490,6 @@ def _row_for_watch(c):
         _fmt(c["change_5d"]),
         rsi,
         score,
-        mark,
         c["stock_label"],
         c.get("buy_label") or "—",
         c["options_label"],
@@ -662,7 +660,7 @@ def build_buy_section(ranked, macro_result=None, held=None, today=None):
         "建议分批 = 评分 ≥ 60 且位置不贵；候补 = 名字好但今天偏贵。"
         "超买、弱评分、杠杆 ETF 明确「今日不买」。\n",
         "**资金口径：** 下表百分比针对各股票预先分配的买入预算，不是每只占总资金的比例；"
-        "若使用 General 的 $400k 现金池，须先满足该计划的入场条件和本批总额上限。\n",
+        "若使用 General 的现金入场计划资金池，须先满足该计划的入场条件和本批总额上限。\n",
     ]
     if event.get("status") in ("caution", "blackout"):
         nxt = ""
@@ -764,7 +762,7 @@ def build_options_desk_section(ranked, macro_result=None, held=None, today=None)
             rows,
         ))
     else:
-        lines.append("今日没有必须下单的期权结构。持有已有仓位，等下一档回撤或事件过完。\n")
+        lines.append("今日没有必须下单的期权结构。等下一档回撤或事件过完。\n")
 
     lines.append("---\n")
     return "\n".join(lines)
@@ -779,11 +777,11 @@ def build_config_watch_section(ranked, held=None, today=None, extra_core=None,
 
     lines = [
         "## Config 关注名单\n",
-        "每天固定看 `CORE_WATCH`（config 里的核心池：Mag7、芯片龙头、个人底仓）。"
+        "每天固定看 `CORE_WATCH`（config 里的核心池：Mag7、芯片龙头）。"
         "其余 universe 名字只在单日 |涨跌| ≥ 3% 或 5 日 |涨跌| ≥ 6% 时出现。"
         "「股票」看涨跌结构，「买入」是能不能加仓。不是自动下单。\n",
     ]
-    headers = ["代码", "名称", "1日", "5日", "RSI", "评分", "持仓", "涨跌", "买入", "期权"]
+    headers = ["代码", "名称", "1日", "5日", "RSI", "评分", "涨跌", "买入", "期权"]
     if core:
         lines.append("### 核心池\n")
         lines.append(_table(headers, [_row_for_watch(c) for c in core]))

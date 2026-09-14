@@ -13,8 +13,8 @@ Trigger (any one):
   that is a one-day fade after a melt-up, not a panic dip)
 - 1-month return <= -12% with RSI < 35 (oversold grind-down)
 
-Names already held (CC_POSITIONS and, when keys exist, the Alpaca book) are
-excluded so a short put does not stack on an existing long. Expiries that
+The report carries no holdings information: `held_tickers()` is always empty,
+so no name is ever marked, excluded or sized as "already held". Expiries that
 land inside three calendar days after FOMC / CPI / NFP / PCE are skipped
 so the short is not pinned into the event.
 """
@@ -33,7 +33,6 @@ from covered_call_advisor import (
     _next_earnings,
     _pick_expiry,
     _risk_free_rate,
-    get_positions,
 )
 
 DROP_5D = -7.0
@@ -101,23 +100,14 @@ def filter_macro_safe_expiries(expirations, events=None, buffer_days=None):
     return safe
 
 
-def _alpaca_held_tickers():
-    """Best-effort Alpaca longs. Empty when keys/network are unavailable."""
-    try:
-        from alpaca_trader import get_alpaca_client, get_current_positions
-        base = os.environ.get("ALPACA_API_BASE_URL", "")
-        paper = "paper" in base or not base
-        pos = get_current_positions(get_alpaca_client(paper=paper))
-        return {t for t, p in pos.items() if float(p.get("qty") or 0) > 0}
-    except Exception:
-        return set()
-
-
 def held_tickers():
-    """Tickers we already own — covered-call overlay plus the broker book."""
-    held = set(get_positions())
-    held |= _alpaca_held_tickers()
-    return held
+    """Always empty by design.
+
+    The report must not reveal or even hint at what the reader owns, so no
+    module reads CC_POSITIONS or the broker book for "held" marks. Every name
+    is treated as not held; the reader applies their own position filter.
+    """
+    return set()
 
 
 def find_drop_candidates(ranked, exclude=None):
@@ -339,7 +329,7 @@ def build_sell_put_radar(ranked, exclude=None, rate=None, analyzer=None, today=N
         "## Sell Put 雷达（大跌收租机会）\n",
         f"*扫描规则：5日 ≤ {DROP_5D:.0f}% / 单日 ≤ {DROP_1D:.0f}%（5日仍 > +{RALLY_5D:.0f}% 则忽略）/ "
         f"1月 ≤ {DROP_1M:.0f}% 且 RSI < {RSI_OVERSOLD:.0f}。"
-        "已持有的股票不推荐；FOMC 后 3 个自然日内到期的合约跳过"
+        "FOMC 后 3 个自然日内到期的合约跳过"
         "（CPI/非农/PCE 当天到期也跳过）。收租为主，被行权则以折价接股。*\n",
     ]
     if skipped:

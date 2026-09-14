@@ -14,6 +14,7 @@ per-stock Claude call — see analyze(macro_score=...).
 import os
 
 import pandas as pd
+import market_bars
 import numpy as np
 
 
@@ -44,6 +45,7 @@ def _fetch_vix():
     try:
         import yfinance as yf
         vix = yf.Ticker("^VIX").history(period="1y", interval="1d")
+        vix = market_bars.drop_unfinished_bars(vix)
         if vix is not None and not vix.empty:
             if isinstance(vix.columns, pd.MultiIndex):
                 vix.columns = vix.columns.droplevel(1)

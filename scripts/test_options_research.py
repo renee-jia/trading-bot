@@ -92,14 +92,14 @@ def test_news_compact_and_nonmutating():
     assert len(row['news_data']) == 4
 
 
-def test_bounded_failure_and_hold_priority():
+def test_bounded_failure_and_strength_order():
     rows = [{'ticker':f'T{i}', 'score_result': {'score':90-i}} for i in range(15)]
     calls = []
     def failed(symbol, **kwargs):
         calls.append(symbol)
         raise ValueError('unavailable')
     text, results = opt.build_section(rows, analyzer=failed, held={'T14'}, today=date(2026, 9, 8))
-    assert calls[0] == 'T14'
+    assert calls[0] == 'T0'   # holdings never change the order (and are never rendered)
     assert len(calls) == len(results) == 8
     assert '数据不足' in text
 

@@ -208,7 +208,7 @@ def build_section(data):
         "## AI Portfolio — 核心 AI 名单\n",
         "固定名单（`AI_PORTFOLIO`）每天单独看：" + "、".join(x["ticker"] for x in names) + "。"
         "这一栏只汇总当天的评分、涨跌结构、买入档位、买点和 sell put 首选；"
-        "买点与期权链细节在「AI 持有标的 Sell Put 方案」，逐股因素在 Detailed Analysis。\n",
+        "买点与期权链细节在「AI 标的 Sell Put 方案」，逐股因素在 Detailed Analysis。\n",
     ]
     if names:
         avg_score = f"{s['avg_score']:.0f}" if s.get("avg_score") is not None else "—"
@@ -218,7 +218,7 @@ def build_section(data):
         lines.append(
             f"**组合概况：** {s.get('in_run', 0)}/{s.get('total', 0)} 只在今日评分池，"
             f"平均评分 **{avg_score}**，平均 1 日 {avg_1d}；"
-            f"站上 200 日线：{lst('above_200')}；已持有：{lst('held')}。\n"
+            f"站上 200 日线：{lst('above_200')}。\n"
         )
         lines.append(
             f"**今日档位：** 建议买入 {lst('buy_now')} · 分批/小加 {lst('scale_in')} · "
@@ -247,12 +247,12 @@ def build_section(data):
     rows = []
     for x in names:
         rows.append([
-            f"**{x['ticker']}**", "持有" if x["held"] else "",
+            f"**{x['ticker']}**",
             x["stock_label"], x["buy_label"], x["buy_size"],
             _levels_cell(x), _put_cell(x), x["earnings"] or "—",
         ])
     lines.append(_table(
-        ["代码", "持仓", "涨跌结构", "买入", "用多少钱", "买点(回踩/分批/接股)",
+        ["代码", "涨跌结构", "买入", "用多少钱", "买点(回踩/分批/接股)",
          "Sell Put 首选", "下次财报"], rows))
     lines.append("")
 
@@ -286,7 +286,7 @@ def build_section(data):
                 _pct(x["change_1d"]), _pct(x["change_1m"]), _pct(x["change_3m"]), _pct(x["from_high"]),
                 f"{x['rsi']:.0f}" if x["rsi"] is not None else "—",
                 _ma_cell(x["price"], x["sma_200"]), f"{score}（{x['grade']}）", rec,
-                ("持有 · " if x["held"] else "") + x["buy_label"], _put_cell(x), x["earnings"] or "—",
+                x["buy_label"], _put_cell(x), x["earnings"] or "—",
             ])
         lines.append(_table(
             ["代码", "层", "名称", "现价", "1日", "1月", "3月", "距高点", "RSI", "200日线",

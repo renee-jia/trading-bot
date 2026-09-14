@@ -33,7 +33,8 @@ def validate(markdown, html, rows):
     assert not re.search(r'(?i)\b(?:nan|inf)\b', markdown)
     assert markdown.index('## Executive Summary') < markdown.index('## General')
     assert markdown.index('## General') < markdown.index('## 今日建议买入')
-    assert '$400k Cash' in markdown and '候选分（未启用）' in markdown
+    assert '现金入场计划' in markdown and '$400k' not in markdown and '候选分（未启用）' in markdown
+    assert '## SaaS Watch' in markdown and markdown.index('## AI Portfolio') < markdown.index('## SaaS Watch') < markdown.index('## 今日建议买入')
     assert '## AI Portfolio' in markdown and markdown.index('## AI Portfolio') < markdown.index('## 今日建议买入')
     assert 'Bottom 20 — Sell/Avoid' not in markdown
     width = None

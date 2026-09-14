@@ -9,6 +9,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
+import market_bars
+
 
 def fetch_price_data(ticker, period="2y", interval="1d"):
     """
@@ -42,6 +44,8 @@ def fetch_price_data(ticker, period="2y", interval="1d"):
 
     data = data[required].copy()
     data.dropna(subset=["Close"], inplace=True)
+    # Never score the session in progress: drop today's bar until the close.
+    data = market_bars.drop_unfinished_bars(data)
 
     if len(data) < 50:
         return None

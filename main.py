@@ -15,6 +15,7 @@ Usage:
     python main.py --quick                            # Skip news (faster)
 """
 import os
+import market_bars
 import sys
 import argparse
 from datetime import datetime
@@ -215,6 +216,7 @@ def run_analysis(tickers, skip_news=False, skip_alpha=False):
 
         result = {
             "ticker": ticker,
+            "data_as_of": market_bars.last_session_date(price_data),
             "name": info.get("name", ticker),
             "sector": info.get("sector", "Unknown"),
             "score_result": score_result,

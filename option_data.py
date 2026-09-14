@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+import market_bars
+
 CONTRACT_HORIZON_DAYS = 400   # far enough for LEAP-free expiry pickers
 SNAPSHOT_BATCH = 100          # symbols per snapshot request
 CHAIN_COLUMNS = ["contractSymbol", "strike", "bid", "ask", "lastPrice",
@@ -178,7 +180,7 @@ class AlpacaOptionTicker:
         if frame is None or frame.empty or "Close" not in frame:
             return alpaca_history(self.symbol, period=kwargs.get("period", "1y"),
                                   end=self.today)
-        return frame
+        return market_bars.drop_unfinished_bars(frame)
 
     @property
     def calendar(self):
@@ -250,14 +252,29 @@ def alpaca_history(symbol, period="1y", end=None):
                                   "close": "Close", "volume": "Volume"})
     frame.index = pd.DatetimeIndex(frame.index).tz_convert("America/New_York").normalize()
     frame.index.name = "Date"
-    return frame[["Open", "High", "Low", "Close", "Volume"]]
+    return market_bars.drop_unfinished_bars(frame[["Open", "High", "Low", "Close", "Volume"]])
+
+
+class CompletedBarsTicker:
+    """yf.Ticker whose history() never includes the session in progress."""
+
+    def __init__(self, symbol):
+        self.symbol = symbol.upper()
+        self._yf = yf.Ticker(symbol)
+        self.source = "yfinance"
+
+    def history(self, **kwargs):
+        return market_bars.drop_unfinished_bars(self._yf.history(**kwargs))
+
+    def __getattr__(self, name):
+        return getattr(self._yf, name)
 
 
 def ticker(symbol, today=None):
     """Chain-capable ticker for the desks; yfinance when Alpaca is unavailable."""
     if source() == "alpaca":
         return AlpacaOptionTicker(symbol, today=today)
-    return yf.Ticker(symbol)
+    return CompletedBarsTicker(symbol)
 
 
 def atm_iv(frame, spot, fallback=None):

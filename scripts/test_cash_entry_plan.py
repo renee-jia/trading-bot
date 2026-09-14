@@ -14,50 +14,50 @@ def snap(vix=15.72,dd=-1.61,day='2026-09-08',dip=False):
             'dip_seen_since_start':dip}
 
 
-@pytest.mark.parametrize('vix,dd,target',[(15.72,-1.61,0),(18,-3,50000),(20,-5,125000),
-    (23,-8,225000),(27,-10,325000),(30,-15,400000),(32,-12,325000),
-    (22,-7.5,125000),(40,-1,0),(16,-12,0),(23,-5,125000)])
+@pytest.mark.parametrize('vix,dd,target',[(15.72,-1.61,0),(18,-3,12.5),(20,-5,31.25),
+    (23,-8,56.25),(27,-10,81.25),(30,-15,100),(32,-12,81.25),
+    (22,-7.5,31.25),(40,-1,0),(16,-12,0),(23,-5,31.25)])
 def test_joint_boundaries(vix,dd,target):
     p=cp.evaluate(snap(vix,dd),today=date(2026,9,8))
-    assert p['target_deployed']==target
-    assert p['target_cash']+p['target_deployed']==400000
-    assert 0<=p['next_batch_cap']<=100000
+    assert p['target_pct']==target
+    assert p['target_cash_pct']+p['target_pct']==100
+    assert 0<=p['next_batch_cap_pct']<=25
 
 
 def test_repeat_and_jump_do_not_double_buy():
     s=snap(30,-16)
     first=cp.evaluate(s,today=date(2026,9,8))
     assert first==cp.evaluate(s,today=date(2026,9,8))
-    assert first['gap']==400000 and first['next_batch_cap']==100000
-    funded=cp.evaluate(s,deployed=325000,today=date(2026,9,8))
-    assert funded['gap']==funded['next_batch_cap']==75000
-    done=cp.evaluate(s,deployed=400000,today=date(2026,9,8))
-    assert done['status']=='funded' and done['gap']==0
+    assert first['gap_pct']==100 and first['next_batch_cap_pct']==25
+    funded=cp.evaluate(s,deployed_pct=81.25,today=date(2026,9,8))
+    assert funded['gap_pct']==funded['next_batch_cap_pct']==18.75
+    done=cp.evaluate(s,deployed_pct=100,today=date(2026,9,8))
+    assert done['status']=='funded' and done['gap_pct']==0
 
 
 def test_rebound_does_not_recommend_selling_to_restore_cash():
-    p=cp.evaluate(snap(),deployed=125000,today=date(2026,9,8))
-    assert p['gap']==0 and p['target_deployed']==125000 and p['target_cash']==275000
+    p=cp.evaluate(snap(),deployed_pct=31.25,today=date(2026,9,8))
+    assert p['gap_pct']==0 and p['target_pct']==31.25 and p['target_cash_pct']==68.75
 
 
 def test_time_rule_and_prior_dip():
     p=cp.evaluate(snap(day='2026-10-15'),today=date(2026,10,15))
-    assert p['target_deployed']==50000 and p['capital_needs_confirmation']
-    p=cp.evaluate(snap(day='2026-10-22'),today=date(2026,10,22),deployed=50000)
-    assert p['target_deployed']==100000 and p['gap']==50000
+    assert p['target_pct']==12.5 and p['capital_needs_confirmation']
+    p=cp.evaluate(snap(day='2026-10-22'),today=date(2026,10,22),deployed_pct=12.5)
+    assert p['target_pct']==25 and p['gap_pct']==12.5
     p=cp.evaluate(snap(day='2026-10-15',dip=True),today=date(2026,10,15))
-    assert p['gap']==0
+    assert p['gap_pct']==0
     p=cp.evaluate(snap(day='2026-10-14'),today=date(2026,10,14))
-    assert p['gap']==0
+    assert p['gap_pct']==0
 
 
 def test_missing_stale_or_invalid_inputs_never_trigger():
-    assert cp.evaluate({'status':'unavailable'},today=date(2026,9,8))['gap']==0
-    p=cp.evaluate(snap(35,-20),today=date(2026,10,1),deployed=50000)
-    assert p['status']=='unavailable' and p['target_cash']==350000 and p['gap']==0
-    for value in [float('nan'),-1,400001]:
+    assert cp.evaluate({'status':'unavailable'},today=date(2026,9,8))['gap_pct']==0
+    p=cp.evaluate(snap(35,-20),today=date(2026,10,1),deployed_pct=12.5)
+    assert p['status']=='unavailable' and p['target_cash_pct']==87.5 and p['gap_pct']==0
+    for value in [float('nan'),-1,101]:
         with pytest.raises(ValueError):
-            cp.evaluate(snap(),deployed=value)
+            cp.evaluate(snap(),deployed_pct=value)
 
 
 def histories():
@@ -100,10 +100,12 @@ def test_cash_plan_is_in_general_and_email_without_spy_proxy():
     plan=cp.evaluate(snapshot,today=date(2026,9,8))
     macro={'cash_entry_plan':plan,'market_data':{'^GSPC':{'cash_plan_snapshot':snapshot}}}
     text=report._build_stock_trend_section([],macro)
-    assert '$400k Cash' in text and '$350k' in text and '10/15' in text
+    assert '现金入场计划' in text and '87.5%' in text and '10/15' in text
+    assert '$' not in cp.render(plan) and '400' not in cp.render(plan)   # pool size is never written out
     assert 'VIX 16.00' in text
     email=daily_watch.email_macro_lines(macro,today=date(2026,9,8))
-    assert any('$400k Cash' in line for line in email)
+    assert any('现金入场计划' in line for line in email)
+    assert not any('$' in line for line in cp.email_lines(plan))
     assert cp.from_market_data({'SPY':{'price':100,'from_high':-10}},today=date(2026,9,8))['status']=='unavailable'
 
 

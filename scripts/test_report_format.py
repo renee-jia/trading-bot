@@ -92,12 +92,13 @@ def test_email_digest_respects_gmail_budget_and_lists_the_rest():
 
 
 def test_ai_portfolio_sorts_between_macro_and_buy_list():
-    md = ('# R\n\n## 今日建议买入\n\nBuy\n\n## AI Portfolio — 核心 AI 名单\n\nAI\n\n'
+    md = ('# R\n\n## 今日建议买入\n\nBuy\n\n## SaaS Watch — 软件 SaaS 名单\n\nSaaS\n\n'
+          '## AI Portfolio — 核心 AI 名单\n\nAI\n\n'
           '## Macro Desk — 今日宏观\n\nMacro\n\n## Sell Put 雷达（大跌收租机会）\n\nRadar\n\n'
           '## Cash-secured Put — 统一评分候选\n\nPut\n\n## Covered Call — 统一评分候选\n\nCC2\n\n'
-          '## Covered Call Advisor（持仓期权收租建议）\n\nCC1\n')
+          '## Covered Call Advisor（写 call 到期日 / 行权价参考）\n\nCC1\n')
     out = format_markdown(md)
-    order = [out.index(k) for k in ('## Macro Desk', '## AI Portfolio', '## 今日建议买入',
+    order = [out.index(k) for k in ('## Macro Desk', '## AI Portfolio', '## SaaS Watch', '## 今日建议买入',
                                     '## Covered Call Advisor', '## Covered Call — 统一',
                                     '## Sell Put 雷达', '## Cash-secured Put')]
     assert order == sorted(order)

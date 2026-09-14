@@ -117,7 +117,8 @@ python main.py --quick --no-alpha       # Fastest mode
 
 ## Automated Daily Reports
 
-- **Cloud Run Job** on GCP (`reward-seeking` project) triggers at 8:00 AM PST, Mon-Fri
+- **Cloud Run Job** on GCP (`reward-seeking` project) triggers at 2:00 PM Pacific (5:00 PM ET, after the close), Mon-Fri
+- Price history is filtered by `market_bars.drop_unfinished_bars`: a session that has not closed (before 16:00 ET) never reaches the analysis, so a run during market hours scores the previous close instead of the opening print. The report header shows `数据截至`, the newest completed session used.
 - Runs full analysis, generates report, emails HTML-formatted results
 - No idle cost — container only runs during the ~7 min analysis
 - Local backup via macOS launchd (runs when laptop wakes up)

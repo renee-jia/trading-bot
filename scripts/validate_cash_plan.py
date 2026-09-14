@@ -25,10 +25,10 @@ def run():
     md={'^GSPC':{'price':snapshot['spx'],'cash_plan_snapshot':snapshot},
         '^VIX':{'price':snapshot['vix']}}
     section=report._build_stock_trend_section([],{'market_data':md,'cash_entry_plan':plan})
-    assert '$400k Cash' in section and snapshot['as_of'] in section
+    assert '现金入场计划' in section and '$' not in cp.render(plan) and snapshot['as_of'] in section
     (output/'general.md').write_text(section)
     print(json.dumps(snapshot,indent=2),flush=True)
-    print(f"Tier: {plan['tier']}; cumulative target: {plan['target_deployed']}; target cash: {plan['target_cash']}",flush=True)
+    print(f"Tier: {plan['tier']}; cumulative target: {plan['target_pct']}% of pool; target cash: {plan['target_cash_pct']}%",flush=True)
     print('PASS: '+str(output),flush=True)
 
 

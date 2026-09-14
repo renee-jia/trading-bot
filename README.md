@@ -150,7 +150,7 @@ technical_analyzer.py           Trend / momentum / volume / volatility
 trend_analyzer.py               Relative strength vs SPY, market regime
 macro_analyzer.py               Market regime, 1w/1m/6m stance, rates tape
 daily_watch.py                  Options desk, config watch, top movers
-covered_call_advisor.py         Covered-call ladders for held shares
+covered_call_advisor.py         Covered-call ladders for a fixed watch list (CC_WATCH)
 sell_put_advisor.py             Cash-secured puts on panic dips
 ai_sell_put_plan.py             Daily sell-put entry plan for a fixed AI watch list
 sentiment_analyzer.py           News headline sentiment
@@ -160,6 +160,7 @@ report_format.py                Shared web/email styling, Markdown rendering, Gm
 email_sender.py                 Email digest + full report attachments
 option_data.py                  Option chains from Alpaca (yfinance fallback) for every options desk
 ai_portfolio.py                 AI Portfolio roll-up section (NVDA/AVGO/GOOGL/META/TSM/MU/AMAT/ORCL/ANET/SNPS)
+saas_watch.py                   SaaS Watch section with fixed star ratings (CRM/NOW/ADBE/DDOG/SNOW/CRWD/NET/WDAY/INTU)
 alpaca_trader.py                Paper/live execution via Alpaca
 backtest_strategy.py            Strategy vs buy-and-hold (single window)
 backtest_years.py               Per-year sweep vs SPY & Nasdaq

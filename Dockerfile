@@ -10,7 +10,7 @@ COPY data_fetcher.py technical_analyzer.py sentiment_analyzer.py \
      daily_report.py email_sender.py alpaca_trader.py stock_discovery.py \
      covered_call_advisor.py sell_put_advisor.py daily_watch.py \
      options_research.py options_decision.py stock_signals.py cash_entry_plan.py \
-     report_format.py ai_sell_put_plan.py option_data.py ai_portfolio.py ./
+     report_format.py ai_sell_put_plan.py option_data.py ai_portfolio.py saas_watch.py ./
 
 # Private algorithm package (custom_alphas / scorer / strategy / configs).
 # Git-ignored, but present in the local build context, so it is baked into the
