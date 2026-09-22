@@ -80,6 +80,25 @@ def test_buy_ladder_is_not_only_panic_dumps():
     assert ripped["buy_action"] == "no_buy"
 
 
+def test_drawdown_label_and_add_verdict():
+    assert dw.drawdown_label(None) == "—"
+    assert dw.drawdown_label(-1) == "接近高位"
+    assert dw.drawdown_label(-10) == "明显折扣"
+    assert dw.drawdown_label(-27) == "超深回撤"
+    near = dw.classify_buy(
+        dw.classify_stock(_row("AAPL", d1=0.5, rsi=72, score=70, from_high=-1.0)),
+        {"status": "open"},
+    )
+    assert near["drawdown_label"] == "接近高位"
+    assert "回踩" in near["add_verdict"] or "不加" in near["add_verdict"]
+    dip = dw.classify_buy(
+        dw.classify_stock(_row("AVGO", d1=-2.0, d5=-3.0, rsi=40, score=72, from_high=-27)),
+        {"status": "open"},
+    )
+    assert dip["drawdown_label"] == "超深回撤"
+    assert "抄底" in dip["add_verdict"]
+
+
 def test_nfp_eve_still_lists_buys_but_shrinks_size():
     card = dw.classify_buy(
         dw.classify_stock(_row("NVDA", d1=-2.0, d5=-3.0, rsi=48, score=72)),
@@ -183,6 +202,29 @@ def test_top_movers_order_and_labels():
     assert all(c["change_1d"] < 0 for c in down)
     assert up[0]["stock_action"] == "no_chase"
     assert down[0]["stock_action"] == "quality_dip"
+
+
+def test_dip_and_add_lists_split_and_show_more_levels():
+    ranked = [
+        _row("KLAC", d1=-5.6, d5=-3.0, rsi=38, score=71, from_high=-12),
+        _row("NVDA", d1=0.2, d5=1.0, rsi=52, score=70),
+        _row("GOOGL", d1=-1.2, rsi=45, score=66, from_high=-14),
+    ]
+    ranked[0]["indicators"]["pct_from_sma50"] = -4.0
+    ranked[0]["indicators"]["pct_from_sma200"] = 6.0
+    cards, _ = dw.annotate(ranked, held={"GOOGL"}, today=date(2026, 8, 24))
+    by = {c["ticker"]: c for c in cards}
+    assert by["KLAC"]["from_sma50"] == -4.0
+    assert by["KLAC"]["dip_setup"] == "quality_pullback"
+    assert "距高点" in "；".join(by["KLAC"]["discount_reasons"])
+    dips = {c["ticker"] for c in dw.dip_candidates(cards)}
+    adds = {c["ticker"] for c in dw.add_candidates(cards)}
+    assert "KLAC" in dips and "KLAC" not in adds
+    assert "NVDA" in adds and "GOOGL" in adds
+    section = dw.build_buy_section(ranked, held={"GOOGL"}, today=date(2026, 8, 24))
+    assert "### 抄底" in section and "### 加仓" in section
+    assert "距50日" in section and "距200日" in section
+    assert "KLAC" in section and "NVDA" in section
 
 
 def test_report_sections_render():

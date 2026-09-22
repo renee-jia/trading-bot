@@ -117,8 +117,109 @@ python main.py --quick --no-alpha       # Fastest mode
 
 ## Automated Daily Reports
 
-- **Cloud Run Job** on GCP (`reward-seeking` project) triggers at 2:00 PM Pacific (5:00 PM ET, after the close), Mon-Fri
+- **Cloud Run Job** on GCP (`reward-seeking` project) triggers at 7:00 AM Pacific (10:00 AM ET), Mon-Fri. Because the US session is already open, `market_bars.drop_unfinished_bars` scores the previous completed close, not the in-progress day. Paper trades run with that same signal.
 - Price history is filtered by `market_bars.drop_unfinished_bars`: a session that has not closed (before 16:00 ET) never reaches the analysis, so a run during market hours scores the previous close instead of the opening print. The report header shows `数据截至`, the newest completed session used.
 - Runs full analysis, generates report, emails HTML-formatted results
 - No idle cost — container only runs during the ~7 min analysis
 - Local backup via macOS launchd (runs when laptop wakes up)
+
+## Rebalance Cadence & Turnover (reviewed 2026-09-20)
+
+The live book ran a **daily** cadence with `blend_speed=0.80` and a 0.3%-of-equity
+min-trade floor. Measured over the paper account's first 6.2 months
+(2026-03-13 → 2026-09-18, 2,392 fills):
+
+| | |
+|---|---|
+| Turnover | $3.09M notional on a $123k book — **~48x annualized** |
+| Days with fills | **111 / 111** trading days |
+| Median daily traded notional | **18.3% of equity** |
+
+Realized P&L by holding period (FIFO over all closed legs) showed where the
+money actually came from:
+
+| Holding period | Legs | Cost basis | P&L | Return |
+|---|---|---|---|---|
+| ≤1 day | 221 | $244,983 | −2,246 | −0.92% |
+| 2–5 days | 346 | $220,290 | −3,921 | −1.78% |
+| 6–10 days | 531 | $370,040 | −224 | −0.06% |
+| 11–21 days | 613 | $423,793 | −1,901 | −0.45% |
+| **22–60 days** | **272** | **$219,672** | **+27,518** | **+12.53%** |
+| >60 days | 19 | $7,125 | −207 | −2.91% |
+
+Every leg held ≤21 days lost money in aggregate (−$8,292 on $1.26M of cost).
+All of the profit came from the positions that were left alone.
+
+### Why the old settings churned
+
+Three parameters were mutually inconsistent:
+
+1. `blend_speed=0.80` closes 80% of the gap to target **per run**, i.e. 96% in
+   two runs. On a daily cadence that is full re-weighting every two days, not
+   "gradual rebalancing".
+2. The rank ladder `mom_w = 3.0 − 2.8 * rank_pct` spreads the top 10 from 18.65%
+   down to 1.35%. One **adjacent** rank swap moves a weight by 1.92% of equity
+   (~$2,366 on $123k) — 6.4x the $369 min-trade floor, so the floor never bound.
+3. Momentum is recomputed every run from 1m/3m returns, so ranks reshuffle daily
+   by construction.
+
+### Backtest evidence
+
+`backtest_strategy.py` now takes `cost_per_side`, `rebalance_interval`,
+`blend_speed` and `use_scores`, so cadence and cost can be swept. Note the
+shipped backtest had `rebalance_interval = 14` hard-coded while live traded
+daily — **it was never validating the live configuration.**
+
+Strategy return over the live window and trailing 12m, by cost assumption
+(140-name universe, scores disabled — see below):
+
+| config | turn/yr | live 5bp | live 15bp | live 25bp | 12m 5bp | 12m 15bp | 12m 25bp |
+|---|---|---|---|---|---|---|---|
+| **live: daily, blend 0.80** | 62.6x | +40.4% | +35.8% | +31.3% | +141.9% | +128.0% | +114.9% |
+| daily, blend 0.20 | 27.5x | +55.1% | +52.8% | +50.5% | +172.9% | +166.0% | +159.2% |
+| weekly, blend 0.80 | 26.2x | +59.0% | +56.7% | +54.4% | +158.9% | +152.3% | +145.9% |
+| 14d, blend 0.80 (old BT) | 15.0x | +39.9% | +38.7% | +37.5% | +192.8% | +189.0% | +185.2% |
+| **weekly, blend 0.20 (shipped)** | ~9.5x | +58.4% | +57.4% | +56.5% | +180.9% | +178.1% | +175.4% |
+
+The daily/0.80 pair is the worst config in **both** windows at **every** cost
+assumption, and it is also the most cost-sensitive (−9.1 pts live, −27.0 pts 12m
+going 5bp → 25bp, vs ~−2 pts for the low-turnover configs).
+
+### What shipped
+
+- `alpaca_trader.run_trading` gained a **cadence gate** (`REBALANCE_INTERVAL_DAYS`,
+  default 5 trading days, 0 disables). It is stateless — it reads the broker's
+  last fill, because Cloud Run jobs have no persistent disk.
+- `calculate_trades` default `blend_speed` 0.80 → **0.20**.
+- `calculate_trades` gained `band_pct` (default **2% of equity**): a name only
+  trades when it is that far from **target**. Measuring against target rather
+  than against the blended trade size keeps the band meaningful independent of
+  `blend_speed`. Full exits still bypass it.
+
+On the actual book as of 2026-09-18, a representative reshuffle produces
+8 orders / 18.3% of equity under the old settings (matching the measured live
+median exactly) vs **4 orders / 8.5%** under the new ones.
+
+### What was tested and rejected
+
+- **Flattening the rank ladder.** Once the cadence is fixed, the ladder does not
+  drive turnover at all (9.6x / 9.4x / 9.5x for slopes 3.0-2.8 / 1.6-1.2 / flat).
+  Full flattening costs ~28 pts of 12m return for ~5 pts of vol. Not shipped.
+- **Skip-the-recent-month momentum** (3-1 instead of 0.3·m1 + 0.7·m3). Wins the
+  live window (+60.7% vs +58.4% at 5bp) but loses badly on trailing 12m (+143.0%
+  vs +180.9%). Not robust on this evidence. Not shipped.
+
+### Known limits of these numbers
+
+- The backtest says +40.4% for the live config over the live window; the account
+  actually did **+23.1%**. The gap comes from survivorship bias (the universe is
+  today's ticker list), no macro cash drag, execution at the close rather than
+  the open auction, whole-share rounding and buy-budget clipping. **Use the
+  backtest to rank configurations, never to predict live returns.**
+- Scores are disabled (`use_scores=False`) in the sweep. With `MOM_PCT = 0.95`
+  the score moves a weight by ±0.1% of equity across its entire 0–100 range and
+  never affects selection, so this changes nothing material while making a
+  daily-cadence sweep tractable.
+- Risk is **not** addressed by any of this. Every config tested lands at 53–64%
+  annualized vol and 29–39% max drawdown. Sector caps and vol targeting remain
+  open (the book is currently 10/10 SaaS out of a 161-name universe).

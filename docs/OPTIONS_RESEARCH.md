@@ -151,5 +151,11 @@ Financial definitions:
 - [OIC: bear put spread](https://www.optionseducation.org/strategies/all-strategies/bear-put-spread)
 - [OIC: bull put spread](https://prd-web.optionseducation.org/strategies/all-strategies/bull-put-spread-credit-put-spread)
 
+The research table now also shows 21-day realized-vol percentile versus the
+same 6-month window used for RV, plus snapshot tags (cheap/rich IV, elevated
+or suppressed HV, near-term inversion, steep put skew, heavy put/call volume).
+These tags do not change stock scores or submit orders. There is still no
+archived IV Rank / IV percentile series.
+
 Stock news remains compact: short summary, up to two risk flags and two sources;
 the underlying news-analysis inputs are retained.

@@ -99,7 +99,7 @@ def _item(n, row, card, plan):
     earnings = (plan or {}).get("earnings")
     if hasattr(earnings, "strftime"):
         earnings = earnings.strftime("%Y-%m-%d")
-    return {
+    item = {
         "ticker": n,
         "layer": LAYER.get(n, ""),
         "name": (row or {}).get("name") or (plan or {}).get("name")
@@ -111,6 +111,10 @@ def _item(n, row, card, plan):
         "change_1m": _num(ind.get("change_1m")),
         "change_3m": _num(ind.get("change_3m")),
         "from_high": _num(ind.get("pct_from_52w_high")) if row else _num((plan or {}).get("from_high")),
+        "from_sma50": _num((card or {}).get("from_sma50")),
+        "from_sma200": _num((card or {}).get("from_sma200")),
+        "drawdown_label": (card or {}).get("drawdown_label") or "",
+        "add_verdict": (card or {}).get("add_verdict") or "",
         "rsi": _num(ind.get("rsi")) if row else _num((plan or {}).get("rsi")),
         "sma_50": _num(ind.get("sma_50")) or _num(levels.get("sma_50")),
         "sma_200": _num(ind.get("sma_200")) or _num(levels.get("sma_200")),
@@ -137,6 +141,15 @@ def _item(n, row, card, plan):
         "earnings": earnings,
         "reasons": list(sr.get("reasoning") or [])[:2],
     }
+    if not item["drawdown_label"]:
+        try:
+            from daily_watch import drawdown_label
+            item["drawdown_label"] = drawdown_label(item["from_high"])
+        except ImportError:
+            item["drawdown_label"] = "—"
+    if not item["add_verdict"]:
+        item["add_verdict"] = "不在今日评分池" if row is None else (item["buy_label"] or "—")
+    return item
 
 
 def build(ranked, macro_result=None, sell_put_plan=None, held=None, today=None):
@@ -234,14 +247,14 @@ def build_section(data):
         rows.append([
             f"**{x['ticker']}**", x["name"][:16], _money(x["price"]),
             _pct(x["change_1d"]), _pct(x["change_5d"]), _pct(x["change_1m"]), _pct(x["change_3m"]),
-            _pct(x["from_high"]),
+            _pct(x["from_high"]), x.get("drawdown_label") or "—",
             f"{x['rsi']:.0f}" if x["rsi"] is not None else "—",
             _ma_cell(x["price"], x["sma_50"]), _ma_cell(x["price"], x["sma_200"]),
-            f"{score}（{x['grade']}）", rec, x["regime"],
+            f"{score}（{x['grade']}）", rec, x.get("add_verdict") or x["buy_label"],
         ])
     lines.append(_table(
-        ["代码", "名称", "现价", "1日", "5日", "1月", "3月", "距高点", "RSI",
-         "50日线", "200日线", "评分", "评级", "Regime"], rows))
+        ["代码", "名称", "现价", "1日", "5日", "1月", "3月", "距高点", "回撤", "RSI",
+         "50日线", "200日线", "评分", "评级", "加仓"], rows))
 
     lines.append("\n### 今日动作\n")
     rows = []
@@ -283,14 +296,15 @@ def build_section(data):
             rec = REC_CN.get(x["recommendation"], x["recommendation"] or "—")
             rows.append([
                 f"**{x['ticker']}**", x["layer"] or "—", x["name"][:14], _money(x["price"]),
-                _pct(x["change_1d"]), _pct(x["change_1m"]), _pct(x["change_3m"]), _pct(x["from_high"]),
+                _pct(x["change_1d"]), _pct(x["change_1m"]), _pct(x["change_3m"]),
+                _pct(x["from_high"]), x.get("drawdown_label") or "—",
                 f"{x['rsi']:.0f}" if x["rsi"] is not None else "—",
                 _ma_cell(x["price"], x["sma_200"]), f"{score}（{x['grade']}）", rec,
-                x["buy_label"], _put_cell(x), x["earnings"] or "—",
+                x.get("add_verdict") or x["buy_label"], _put_cell(x), x["earnings"] or "—",
             ])
         lines.append(_table(
-            ["代码", "层", "名称", "现价", "1日", "1月", "3月", "距高点", "RSI", "200日线",
-             "评分", "评级", "买入", "Sell Put 首选", "下次财报"], rows))
+            ["代码", "层", "名称", "现价", "1日", "1月", "3月", "距高点", "回撤", "RSI", "200日线",
+             "评分", "评级", "加仓", "Sell Put 首选", "下次财报"], rows))
         buyable = s.get("watch_buyable") or []
         lines.append("")
         lines.append("观察名单今日过线（买入/分批）：" + ("、".join(buyable) if buyable else "无") + "。\n")
@@ -314,7 +328,8 @@ def email_lines(data):
                if k and x.get("expiry") else (x.get("entry_label") or "put —"))
         lines.append(
             f"  {x['ticker']:<5} {_money(x['price']):>8} {_pct(x['change_1d']):>7}  "
-            f"{score}{'(' + rec + ')' if rec else ''} | {x['buy_label']} | "
+            f"距高点 {_pct(x['from_high'])}（{x.get('drawdown_label') or '—'}）  "
+            f"{score}{'(' + rec + ')' if rec else ''} | {x.get('add_verdict') or x['buy_label']} | "
             f"买点 {_levels_cell(x)} | {put}"
         )
     watch = data.get("watch") or []
@@ -327,7 +342,8 @@ def email_lines(data):
                    if k and x.get("expiry") else (x.get("entry_label") or "put —"))
             lines.append(
                 f"  {x['ticker']:<5} {_money(x['price']):>8} {_pct(x['change_1d']):>7}  "
-                f"{score} | {x['buy_label']} | {put}"
+                f"距高点 {_pct(x['from_high'])}  "
+                f"{score} | {x.get('add_verdict') or x['buy_label']} | {put}"
             )
     return lines
 

@@ -163,7 +163,30 @@ def evaluate(snapshot, deployed_pct=0, today=None, capital_as_of=PLAN_START):
         result['status']='funded';result['reason']+='声明已投入比例已达到目标，不重复买入。'
     if result['gap_pct']>BATCH_CAP:
         result['reason']+=f'跨档跳跌时不一次补齐：单轮参考上限为现金池 {_p(BATCH_CAP)}，余款分步复核。'
+    result['next_trigger']=next_trigger(snapshot)
     return result
+
+
+def next_trigger(snapshot):
+    """First unmet VIX×drawdown rung. None if the snapshot cannot be priced."""
+    if snapshot.get('status')!='ok':
+        return None
+    vix,dd,peak=snapshot.get('vix'),snapshot.get('drawdown_pct'),snapshot.get('peak')
+    if any(not isinstance(x,(int,float)) or not math.isfinite(x) for x in (vix,dd,peak)) or peak<=0:
+        return None
+    for name,min_vix,min_dd,target in TIERS:
+        if vix>=min_vix and -dd>=min_dd:
+            continue
+        return {
+            'tier':name,
+            'vix_need':min_vix,
+            'vix_gap':round(max(0.0,min_vix-vix),2),
+            'drawdown_need_pct':-min_dd,
+            'drawdown_gap_pct':round(max(0.0,min_dd-(-dd)),2),
+            'spx_level':round(peak*(1-min_dd/100),2),
+            'target_pct':target,
+        }
+    return None
 
 
 def render(plan):

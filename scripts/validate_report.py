@@ -34,7 +34,9 @@ def validate(markdown, html, rows):
     assert markdown.index('## Executive Summary') < markdown.index('## General')
     assert markdown.index('## General') < markdown.index('## 今日建议买入')
     assert '现金入场计划' in markdown and '$400k' not in markdown and '候选分（未启用）' in markdown
-    assert '## SaaS Watch' in markdown and markdown.index('## AI Portfolio') < markdown.index('## SaaS Watch') < markdown.index('## 今日建议买入')
+    assert '## 半导体加仓' in markdown and markdown.index('## AI Portfolio') < markdown.index('## 半导体加仓') < markdown.index('## 光学互联') < markdown.index('## SaaS Watch')
+    assert '## SaaS Watch' in markdown and markdown.index('## SaaS Watch') < markdown.index('## 抄底布局') < markdown.index('## 今日建议买入')
+    assert '## 抄底布局' in markdown
     assert '## AI Portfolio' in markdown and markdown.index('## AI Portfolio') < markdown.index('## 今日建议买入')
     assert 'Bottom 20 — Sell/Avoid' not in markdown
     width = None
@@ -61,7 +63,7 @@ def validate(markdown, html, rows):
     # The mailed body must stay under Gmail's clip limit and keep the decision desks.
     digest, omitted = email_digest(markdown)
     assert len(digest.encode('utf-8')) <= EMAIL_BUDGET, len(digest)
-    for key in ('Executive Summary', 'General', 'AI Portfolio', '今日建议买入'):
+    for key in ('Executive Summary', 'General', 'AI Portfolio', '半导体加仓', '抄底布局', '今日建议买入'):
         assert key in digest and not any(key in o for o in omitted), key
     assert 'Detailed Analysis' in omitted
     return {'stocks':len(rows), 'tables':len(soup.select('table')),

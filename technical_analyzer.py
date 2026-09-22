@@ -717,8 +717,10 @@ def _get_latest_indicators(data, params):
     sma200 = close.rolling(params["sma_long"], min_periods=params["sma_long"]).mean().iloc[-1]
     if not pd.isna(sma50):
         indicators["sma_50"] = round(float(sma50), 2)
+        indicators["pct_from_sma50"] = round((indicators["price"] / indicators["sma_50"] - 1) * 100, 2)
     if not pd.isna(sma200):
         indicators["sma_200"] = round(float(sma200), 2)
+        indicators["pct_from_sma200"] = round((indicators["price"] / indicators["sma_200"] - 1) * 100, 2)
 
     # Price changes
     if len(close) >= 2:

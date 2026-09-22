@@ -8,3 +8,5 @@ reports/
 logs/
 *.plist
 .git/
+.env
+.DS_Store

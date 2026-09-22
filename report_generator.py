@@ -14,9 +14,23 @@ from datetime import datetime
 from pathlib import Path
 
 
+def _preclose_data_note(data_as_of):
+    """Morning runs score the previous completed session, not the open print."""
+    import market_bars
+    now = datetime.now(market_bars.NY)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=market_bars.NY)
+    now = now.astimezone(market_bars.NY)
+    if now.time() >= market_bars.SESSION_CLOSE:
+        return ""
+    return (f"\n\n本次在美股收盘前生成：日线、评分与纸面交易信号截至 "
+            f"{data_as_of}，不含今天未完成的K线。")
+
+
 def generate_report(scored_results, output_dir="reports", macro_result=None,
                     discovery_result=None, options_decisions=None,
-                    sell_put_plan=None, ai_portfolio=None, saas_watch=None):
+                    sell_put_plan=None, ai_portfolio=None, saas_watch=None,
+                    dip_layout=None, chip_layout=None, optics_layout=None):
     """
     Generate a comprehensive Markdown recommendation report.
 
@@ -31,6 +45,9 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
         ai_portfolio: optional dict that receives ai_portfolio.build() output so
             the caller can reuse it for the email digest
         saas_watch: optional dict that receives saas_watch.build() output, same idea
+        dip_layout: optional dict that receives dip_layout.build() output, same idea
+        chip_layout: optional dict that receives chip_layout.build() output, same idea
+        optics_layout: optional dict that receives optics_layout.build() output, same idea
 
     Returns:
         (report_path, report_content) tuple
@@ -86,11 +103,39 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
         saas = {"error": str(e)}
     if saas_watch is not None:
         saas_watch.update(saas)
+    try:
+        import dip_layout as dip_desk
+        layout = dip_desk.build(
+            ranked, macro_result=macro_result,
+            sell_put_plan=None if (sell_put_plan or {}).get("error") else sell_put_plan)
+    except Exception as e:
+        layout = {"error": str(e)}
+    if dip_layout is not None:
+        dip_layout.update(layout)
+    try:
+        import chip_layout as chip_desk
+        chips = chip_desk.build(
+            ranked, macro_result=macro_result,
+            sell_put_plan=None if (sell_put_plan or {}).get("error") else sell_put_plan)
+    except Exception as e:
+        chips = {"error": str(e)}
+    if chip_layout is not None:
+        chip_layout.update(chips)
+    try:
+        import optics_layout as optics_desk
+        optics = optics_desk.build(
+            ranked, macro_result=macro_result,
+            sell_put_plan=None if (sell_put_plan or {}).get("error") else sell_put_plan)
+    except Exception as e:
+        optics = {"error": str(e)}
+    if optics_layout is not None:
+        optics_layout.update(optics)
     report = _build_report(ranked, macro_result=macro_result,
                           discovery_result=discovery_result,
                           options_research_section=options_section,
                           sell_put_plan=sell_put_plan, ai_portfolio=portfolio,
-                          saas_watch=saas)
+                          saas_watch=saas, dip_layout=layout, chip_layout=chips,
+                          optics_layout=optics)
 
     Path(report_path).write_text(report, encoding="utf-8")
     from report_format import render_html
@@ -100,7 +145,8 @@ def generate_report(scored_results, output_dir="reports", macro_result=None,
 
 
 def _build_report(ranked, macro_result=None, discovery_result=None, options_research_section="",
-                  sell_put_plan=None, ai_portfolio=None, saas_watch=None):
+                  sell_put_plan=None, ai_portfolio=None, saas_watch=None,
+                  dip_layout=None, chip_layout=None, optics_layout=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total = len(ranked)
     data_as_of = max((r.get("data_as_of") for r in ranked if r.get("data_as_of")), default="未知")
@@ -174,6 +220,40 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
     except Exception as e:
         saas_section = f"## SaaS Watch — 软件 SaaS 名单\n\n*Section failed: {e}*\n\n---\n"
 
+    # 抄底布局: fixed non-tech dip/add book (roll-up, no new fetches)
+    try:
+        import dip_layout as dip_desk
+        if dip_layout is None:
+            dip_layout = dip_desk.build(ranked, macro_result=macro_result,
+                                        sell_put_plan=sell_put_plan)
+        if dip_layout.get("error"):
+            raise RuntimeError(dip_layout["error"])
+        dip_section = dip_desk.build_section(dip_layout)
+    except Exception as e:
+        dip_section = f"## 抄底布局 — Diversified Portfolio\n\n*Section failed: {e}*\n\n---\n"
+
+    try:
+        import chip_layout as chip_desk
+        if chip_layout is None:
+            chip_layout = chip_desk.build(ranked, macro_result=macro_result,
+                                          sell_put_plan=sell_put_plan)
+        if chip_layout.get("error"):
+            raise RuntimeError(chip_layout["error"])
+        chip_section = chip_desk.build_section(chip_layout)
+    except Exception as e:
+        chip_section = f"## 半导体加仓 — Chip Portfolio\n\n*Section failed: {e}*\n\n---\n"
+
+    try:
+        import optics_layout as optics_desk
+        if optics_layout is None:
+            optics_layout = optics_desk.build(ranked, macro_result=macro_result,
+                                              sell_put_plan=sell_put_plan)
+        if optics_layout.get("error"):
+            raise RuntimeError(optics_layout["error"])
+        optics_section = optics_desk.build_section(optics_layout)
+    except Exception as e:
+        optics_section = f"## 光学互联 — Optics Portfolio\n\n*Section failed: {e}*\n\n---\n"
+
     # Covered-call ladders for the CC_WATCH ticker list (empty when unset; no position data):
     # per-holding ladders first, then the unified-score second opinion.
     try:
@@ -211,7 +291,7 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 
     report = f"""# Trading Bot · 每日策略报告
 
-**生成时间：** {now}（本机时区） · **数据截至：** {data_as_of}（最近一根完整日线收盘） · **分析股票：** {total} 只
+**生成时间：** {now}（本机时区） · **数据截至：** {data_as_of}（最近一根完整日线收盘） · **分析股票：** {total} 只{_preclose_data_note(data_as_of)}
 
 **策略周期：** 数周以上持有；期权另按期限、报价与事件条件筛选。
 
@@ -237,7 +317,13 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 
 {ai_portfolio_section}
 
+{chip_section}
+
+{optics_section}
+
 {saas_section}
+
+{dip_section}
 
 {buy_section}
 
@@ -299,20 +385,25 @@ Each stock is evaluated across four dimensions:
 
 """
 
+    add_map = _add_card_map(ranked, macro_result)
+
     # Top picks table
     top = ranked[:20]
-    report += "| Rank | Ticker | Name | Score | Grade | Recommendation | Confidence | Regime |\n"
-    report += "|------|--------|------|-------|-------|----------------|------------|--------|\n"
+    report += "| Rank | Ticker | Name | Score | Grade | 距高点 | 回撤 | 加仓判断 | Recommendation | Confidence |\n"
+    report += "|------|--------|------|-------|-------|--------|------|----------|----------------|------------|\n"
 
     for i, r in enumerate(top, 1):
         sr = r["score_result"]
         name = r.get("name", r["ticker"])[:20]
+        card = _row_add(r, add_map)
         report += (
             f"| {i} | **{r['ticker']}** | {name} "
             f"| {sr['score']:.1f} | {sr['grade']} "
+            f"| {_fmt_pct(card.get('from_high'))} "
+            f"| {card.get('drawdown_label') or '—'} "
+            f"| {card.get('add_verdict') or '—'} "
             f"| {sr['recommendation']} "
-            f"| {sr['confidence']*100:.0f}% "
-            f"| {sr.get('regime', '-')} |\n"
+            f"| {sr['confidence']*100:.0f}% |\n"
         )
 
     # Component breakdown for top picks
@@ -334,21 +425,25 @@ Each stock is evaluated across four dimensions:
 
     # Price performance for top picks
     report += "\n### Price Performance (Top Picks)\n\n"
-    report += "| Ticker | Price | 1D | 5D | 1M | 3M | RSI | SMA50 | SMA200 |\n"
-    report += "|--------|-------|-----|-----|-----|-----|-----|-------|--------|\n"
+    report += "| Ticker | Price | 1D | 5D | 1M | 3M | 距高点 | 回撤 | 距50日 | 距200日 | RSI | 加仓判断 |\n"
+    report += "|--------|-------|-----|-----|-----|-----|--------|------|--------|---------|-----|----------|\n"
 
     for r in top:
         ind = r.get("indicators", {})
+        card = _row_add(r, add_map)
         report += (
             f"| **{r['ticker']}** "
-            f"| ${ind.get('price', 0):.2f} "
-            f"| {ind.get('change_1d', 0):+.1f}% "
-            f"| {ind.get('change_5d', 0):+.1f}% "
-            f"| {ind.get('change_1m', 0):+.1f}% "
-            f"| {ind.get('change_3m', 0):+.1f}% "
-            f"| {ind.get('rsi', 0):.0f} "
-            f"| ${ind.get('sma_50', 0):.2f} "
-            f"| ${ind.get('sma_200', 0):.2f} |\n"
+            f"| {_fmt_money(ind.get('price'))} "
+            f"| {_fmt_pct(ind.get('change_1d'))} "
+            f"| {_fmt_pct(ind.get('change_5d'))} "
+            f"| {_fmt_pct(ind.get('change_1m'))} "
+            f"| {_fmt_pct(ind.get('change_3m'))} "
+            f"| {_fmt_pct(card.get('from_high'))} "
+            f"| {card.get('drawdown_label') or '—'} "
+            f"| {_fmt_pct(card.get('from_sma50'))} "
+            f"| {_fmt_pct(card.get('from_sma200'))} "
+            f"| {_fmt_num(ind.get('rsi'), 0)} "
+            f"| {card.get('add_verdict') or '—'} |\n"
         )
 
     # Portfolio weight suggestions (score + momentum + macro)
@@ -371,10 +466,13 @@ Each stock is evaluated across four dimensions:
         sector = r.get("sector", "Unknown")
 
         report += f"### {r['ticker']} - {name}\n\n"
+        card = _row_add(r, add_map)
         report += f"**Sector:** {sector} | "
         report += f"**Score:** {sr['score']:.1f}/100 ({sr['grade']}) | "
         report += f"**Recommendation:** {sr['recommendation']} | "
-        report += f"**Confidence:** {sr['confidence']*100:.0f}%\n\n"
+        report += f"**Confidence:** {sr['confidence']*100:.0f}% | "
+        report += f"**距高点:** {_fmt_pct(card.get('from_high'))}（{card.get('drawdown_label') or '—'}） | "
+        report += f"**加仓:** {card.get('add_verdict') or '—'}\n\n"
 
         # Component scores
         c = sr["components"]
@@ -399,6 +497,8 @@ Each stock is evaluated across four dimensions:
                 report += f" | **3M:** {ind.get('change_3m', 0):+.1f}%"
             if ind.get("rsi") is not None:
                 report += f" | **RSI:** {ind.get('rsi', 0):.0f}"
+            report += f" | **距50日:** {_fmt_pct(card.get('from_sma50'))}"
+            report += f" | **距200日:** {_fmt_pct(card.get('from_sma200'))}"
             report += "\n"
 
         report += _compact_stock_news(r)
@@ -574,9 +674,10 @@ def _build_bottom_20(ranked):
 
     section = "\n---\n\n## 评分后列 — 相对排名\n\n"
     section += "股票池中的相对后列，可能仍含 Buy/Hold；减仓与回避以 Recommendation 列为准。\n\n"
-    section += "| Rank | Ticker | Name | Score | Grade | Recommendation | 主要因素 |\n"
-    section += "|------|--------|------|-------|-------|----------------|-----------|\n"
+    section += "| Rank | Ticker | Name | Score | Grade | 距高点 | 回撤 | 加仓判断 | Recommendation | 主要因素 |\n"
+    section += "|------|--------|------|-------|-------|--------|------|----------|----------------|-----------|\n"
 
+    add_map = _add_card_map(bottom)
     for i, r in enumerate(bottom, 1):
         sr = r["score_result"]
         name = r.get("name", r["ticker"])[:20]
@@ -584,9 +685,13 @@ def _build_bottom_20(ranked):
         issue = reasons[0] if reasons else "暂无原因摘要"
         if len(issue) > 80:
             issue = issue[:79] + "…"
+        card = _row_add(r, add_map)
         section += (
             f"| {i} | **{r['ticker']}** | {name} "
             f"| {sr['score']:.1f} | {sr['grade']} "
+            f"| {_fmt_pct(card.get('from_high'))} "
+            f"| {card.get('drawdown_label') or '—'} "
+            f"| {card.get('add_verdict') or '—'} "
             f"| {sr['recommendation']} "
             f"| {issue} |\n"
         )
@@ -920,13 +1025,13 @@ def _build_ai_semi_section(ranked):
 
         section += "\n### 主题内动量排行（近 3 月）\n\n"
         section += "**领涨 Top 5：**\n\n"
-        section += "| 标的 | 名称 | 子板块 | 评分 | 1M | 3M | 建议 |\n"
-        section += "|------|------|--------|------|-----|-----|------|\n"
+        section += "| 标的 | 名称 | 子板块 | 评分 | 1M | 3M | 距高点 | 回撤 | 建议 |\n"
+        section += "|------|------|--------|------|-----|-----|--------|------|------|\n"
         for r in leaders:
             section += _ai_semi_row(r, cfg_sector(r["ticker"]))
         section += "\n**落后 Bottom 5：**\n\n"
-        section += "| 标的 | 名称 | 子板块 | 评分 | 1M | 3M | 建议 |\n"
-        section += "|------|------|--------|------|-----|-----|------|\n"
+        section += "| 标的 | 名称 | 子板块 | 评分 | 1M | 3M | 距高点 | 回撤 | 建议 |\n"
+        section += "|------|------|--------|------|-----|-----|--------|------|------|\n"
         for r in laggards:
             section += _ai_semi_row(r, cfg_sector(r["ticker"]))
 
@@ -971,10 +1076,66 @@ def _ai_semi_row(r, sub_sector):
         "Reduce": "减仓", "Avoid": "回避",
     }
     rec = rec_map.get(sr["recommendation"], sr["recommendation"])
+    fh = ind.get("pct_from_52w_high", ind.get("from_high"))
+    try:
+        import daily_watch
+        dd = daily_watch.drawdown_label(fh)
+    except Exception:
+        dd = "—"
     return (
         f"| **{r['ticker']}** | {name} | {sub_sector} "
-        f"| {sr['score']:.1f} | {m1_str} | {m3_str} | {rec} |\n"
+        f"| {sr['score']:.1f} | {m1_str} | {m3_str} "
+        f"| {_fmt_pct(fh)} | {dd} | {rec} |\n"
     )
+
+
+def _add_card_map(ranked, macro_result=None):
+    try:
+        import daily_watch
+        cards, _ = daily_watch.annotate(
+            ranked, tape=(macro_result or {}).get("macro_tape"))
+        return {c["ticker"]: c for c in cards}
+    except Exception:
+        return {}
+
+
+def _row_add(row, add_map=None):
+    ticker = (row.get("ticker") or "").upper()
+    card = (add_map or {}).get(ticker)
+    if card:
+        return card
+    ind = row.get("indicators") or {}
+    fh = ind.get("pct_from_52w_high", ind.get("from_high"))
+    try:
+        import daily_watch
+        dd = daily_watch.drawdown_label(fh)
+    except Exception:
+        dd = "—"
+    return {
+        "from_high": fh,
+        "drawdown_label": dd,
+        "add_verdict": "—",
+        "from_sma50": ind.get("pct_from_sma50"),
+        "from_sma200": ind.get("pct_from_sma200"),
+    }
+
+
+def _fmt_money(val):
+    if val is None:
+        return "—"
+    try:
+        return f"${float(val):.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_num(val, digits=0):
+    if val is None:
+        return "—"
+    try:
+        return f"{float(val):.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def _fmt_pct(val, digits=1):

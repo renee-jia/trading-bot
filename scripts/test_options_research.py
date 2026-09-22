@@ -57,6 +57,8 @@ def test_snapshot_and_events():
     assert r['term_slope'] == pytest.approx(.05)
     assert r['earnings_status'] == 'clear'
     assert r['rv21'] > 0
+    assert r['hv21_percentile'] is not None
+    assert isinstance(r['signals'], list)
     json.dumps(r, allow_nan=False)
     card = {'options_action': 'sell_put'}
     r['iv_rv_ratio'] = 1.4
@@ -161,6 +163,33 @@ def test_null_macro_tape_and_no_new_short():
                                    analyzer=analyze, held=set(), today=date(2026, 9, 8))
     assert results[0]['decision']['status'] == 'wait'
     assert results[0]['decision']['candidates'] == []
+
+
+def test_structure_signals_and_hv_percentile():
+    legs = np.array([0.03 if i % 2 == 0 else -0.03 for i in range(40)])
+    closes = pd.Series(np.concatenate([np.full(50, 100.0), 100 * np.exp(np.cumsum(legs))]))
+    assert opt.realized_vol_percentile(closes) >= 80
+    assert opt.realized_vol_percentile(pd.Series([100.0] * 64)) is None
+    r = {'atm_iv': .2, 'rv21': .3, 'rv63': .28, 'hv21_percentile': 15,
+         'term_slope': -.05, 'skew_5pct': .06, 'put_call_volume': 1.8}
+    ids = [s['id'] for s in opt.snapshot_signals(r)]
+    assert ids == ['iv_cheap', 'hv_suppressed', 'term_inverted', 'put_skew', 'pc_heavy']
+    rich = dict(r, atm_iv=.4, rv21=.25, rv63=.25, hv21_percentile=90, term_slope=.02,
+                skew_5pct=.01, put_call_volume=.8)
+    assert [s['id'] for s in opt.snapshot_signals(rich)] == ['iv_rich', 'hv_elevated']
+
+
+def test_watch_list_is_scanned_before_score_extremes():
+    rows = [{'ticker': 'ZZZ', 'score_result': {'score': 99}},
+            {'ticker': 'NVDA', 'score_result': {'score': 50}}]
+    calls = []
+    def failed(symbol, **kwargs):
+        calls.append(symbol)
+        raise ValueError('unavailable')
+    with patch.object(opt, 'priority_tickers', return_value=['NVDA']):
+        text, results = opt.build_section(rows, analyzer=failed, today=date(2026, 9, 8))
+    assert calls[0] == 'NVDA' and 'ZZZ' in calls
+    assert '结构信号' in text and len(results) == 2
 
 
 def test_front_month_prefers_the_monthly_inside_the_window():

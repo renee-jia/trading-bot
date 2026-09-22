@@ -25,7 +25,6 @@
 	<array>
 		<string>__PROJECT_DIR__/.venv_trading/bin/python</string>
 		<string>__PROJECT_DIR__/daily_report.py</string>
-		<string>--trade</string>
 	</array>
 	<key>StandardErrorPath</key>
 	<string>__PROJECT_DIR__/logs/daily_report.stderr.log</string>
@@ -34,7 +33,7 @@
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Hour</key>
-		<integer>8</integer>
+		<integer>7</integer>
 		<key>Minute</key>
 		<integer>0</integer>
 	</dict>

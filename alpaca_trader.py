@@ -177,11 +177,26 @@ def get_account_value(client):
 
 
 def calculate_trades(target_weights, current_positions, account_value,
-                     cash_pct, blend_speed=0.80):
+                     cash_pct, blend_speed=0.20, band_pct=0.02):
     """
     Calculate trades needed to move toward target weights.
 
-    Uses gradual rebalancing (blend_speed) to reduce turnover.
+    Two knobs control turnover, and they do different jobs:
+
+    blend_speed — fraction of the gap to target closed per rebalance. This was
+        0.80, which is not "gradual": it lands 96% of the way to target in two
+        runs, so with a daily cadence the book was fully re-weighted every
+        couple of days. Backtests over both the live window and the trailing
+        12m show the 0.80/daily pair is the WORST of every cadence tested at
+        every transaction-cost assumption (see docs/STRATEGY.md).
+
+    band_pct — tolerance band, as a fraction of equity. A name only trades when
+        it is more than this far from its TARGET weight. Measuring the band
+        against the target (not against the blended trade size) keeps it
+        meaningful no matter what blend_speed is. The old code had only a
+        min-trade floor of 0.3% of equity, which never bound: one adjacent
+        momentum-rank swap moves a weight by ~1.9% of equity (~6x the floor),
+        so daily rank noise mechanically produced trades.
 
     Returns:
         list of dicts: [{ticker, side, qty, dollar_amount, reason}]
@@ -241,6 +256,13 @@ def calculate_trades(target_weights, current_positions, account_value,
                 "blended_weight": 0.0,
                 "reason": "Exit (dropped from portfolio)",
             })
+            continue
+
+        # Tolerance band: ignore names that are already close to TARGET. This
+        # is the gate that actually suppresses churn; min_trade below is only a
+        # size floor for the orders that do pass.
+        target_full = account_value * target_weights.get(ticker, 0) / 100
+        if abs(target_full - current_value) < account_value * band_pct:
             continue
 
         # Skip tiny trades (< min_trade or < 1% of position)
@@ -387,6 +409,42 @@ def execute_trades(client, trades, dry_run=False):
     return results
 
 
+def _calendar_days_since_last_fill(client):
+    """Trading days since the most recent fill, or None if the book never traded.
+
+    Stateless on purpose: Cloud Run jobs have no persistent disk, so the
+    cadence gate reads the broker's own record instead of a local marker file.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    try:
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100,
+                               direction="desc")
+        orders = client.get_orders(filter=req)
+    except Exception as e:
+        print(f"  Warning: could not read order history ({e}) — not gating this run")
+        return None
+    filled = [o for o in orders
+              if getattr(o, "filled_at", None) is not None]
+    if not filled:
+        return None
+    last = max(o.filled_at for o in filled)
+    now = datetime.now(last.tzinfo)
+    try:
+        from alpaca.trading.requests import GetCalendarRequest
+        cal = client.get_calendar(
+            GetCalendarRequest(start=last.date(), end=now.date()))
+    except Exception:
+        cal = None
+    # Count trading days via the market calendar when available; fall back to
+    # calendar days (conservative: gates for longer, never shorter).
+    if cal:
+        days = sum(1 for d in cal if last.date() < d.date <= now.date())
+    else:
+        days = (now.date() - last.date()).days
+    return days, last
+
+
 def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
                 max_notional=None):
     """
@@ -431,8 +489,22 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
         return {"status": "skipped", "reason": "open_orders_pending",
                 "open_orders": len(open_orders)}
 
-    # Examine account every run — no interval gate. The min-trade thresholds
-    # in calculate_trades prevent churn once we're aligned.
+    # --- Rebalance cadence gate ---
+    # The book used to re-examine (and trade) every single run: 111 fills on
+    # 111 trading days, ~48x annualized turnover. Backtests across the live
+    # window and the trailing 12m both rank a weekly cadence well above the
+    # daily one at every transaction-cost assumption, so the default is now
+    # weekly. Override with REBALANCE_INTERVAL_DAYS, or 0 to disable the gate.
+    interval = int(os.environ.get("REBALANCE_INTERVAL_DAYS", "5") or 0)
+    if interval > 0 and not dry_run:
+        since = _calendar_days_since_last_fill(client)
+        if since is not None:
+            days, last = since
+            if days < interval:
+                print(f"\nLast fill {last:%Y-%m-%d} ({days} trading day(s) ago) — "
+                      f"rebalance cadence is every {interval}. Skipping this run.")
+                return {"status": "skipped", "reason": "rebalance_interval",
+                        "days_since_last_fill": days, "interval": interval}
 
     # Get current positions first: the rank buffer needs to know what we hold.
     # Remnants (< 1% of equity) don't count as held — a stuck leftover must not

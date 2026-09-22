@@ -3,8 +3,8 @@
 # Install the daily stock analysis report as a macOS Launch Agent.
 #
 # What this does:
-#   - Installs a launchd agent that runs daily_report.py at 8:00 AM
-#   - If your Mac is asleep at 8 AM, it runs when the Mac wakes up
+#   - Installs a launchd agent that runs daily_report.py at 7:00 AM
+#   - If your Mac is asleep at 7 AM, it runs when the Mac wakes up
 #   - Skips weekends automatically
 #   - Emails the report to the address(es) you set in REPORT_EMAIL_TO (.env)
 #
@@ -95,14 +95,14 @@ with open('$PLIST_SRC', 'wb') as f:
 
     # Load the agent
     launchctl bootstrap "gui/$(id -u)" "$PLIST_DST"
-    echo "Agent loaded and scheduled for 8:00 AM daily."
+    echo "Agent loaded and scheduled for 7:00 AM daily."
     echo ""
     echo "Logs:"
     echo "  stdout: $LOG_DIR/daily_report.stdout.log"
     echo "  stderr: $LOG_DIR/daily_report.stderr.log"
     echo ""
-    echo "Done! The report will run at 8 AM every trading day."
-    echo "If your Mac is asleep at 8 AM, it runs when you open the lid."
+    echo "Done! The report will run at 7 AM every trading day."
+    echo "If your Mac is asleep at 7 AM, it runs when you open the lid."
 }
 
 uninstall() {

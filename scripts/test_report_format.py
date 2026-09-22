@@ -91,14 +91,40 @@ def test_email_digest_respects_gmail_budget_and_lists_the_rest():
     assert omitted == [] and '邮件正文说明' not in html
 
 
+def test_preclose_note_only_before_the_us_close():
+    from datetime import datetime
+    from unittest.mock import patch
+    import market_bars
+
+    class Morning(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 21, 11, 0, tzinfo=tz or market_bars.NY)
+
+    class Closed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 21, 16, 0, tzinfo=tz or market_bars.NY)
+
+    with patch('report_generator.datetime', Morning):
+        assert '2026-09-18' in report_generator._preclose_data_note('2026-09-18')
+    with patch('report_generator.datetime', Closed):
+        assert report_generator._preclose_data_note('2026-09-18') == ''
+
+
 def test_ai_portfolio_sorts_between_macro_and_buy_list():
-    md = ('# R\n\n## 今日建议买入\n\nBuy\n\n## SaaS Watch — 软件 SaaS 名单\n\nSaaS\n\n'
+    md = ('# R\n\n## 今日建议买入\n\nBuy\n\n## 抄底布局 — Diversified Portfolio\n\nDip\n\n'
+          '## SaaS Watch — 软件 SaaS 名单\n\nSaaS\n\n'
+          '## 光学互联 — Optics Portfolio\n\nOptics\n\n'
+          '## 半导体加仓 — Chip Portfolio\n\nChip\n\n'
           '## AI Portfolio — 核心 AI 名单\n\nAI\n\n'
           '## Macro Desk — 今日宏观\n\nMacro\n\n## Sell Put 雷达（大跌收租机会）\n\nRadar\n\n'
           '## Cash-secured Put — 统一评分候选\n\nPut\n\n## Covered Call — 统一评分候选\n\nCC2\n\n'
           '## Covered Call Advisor（写 call 到期日 / 行权价参考）\n\nCC1\n')
     out = format_markdown(md)
-    order = [out.index(k) for k in ('## Macro Desk', '## AI Portfolio', '## SaaS Watch', '## 今日建议买入',
+    order = [out.index(k) for k in ('## Macro Desk', '## AI Portfolio', '## 半导体加仓',
+                                    '## 光学互联', '## SaaS Watch',
+                                    '## 抄底布局', '## 今日建议买入',
                                     '## Covered Call Advisor', '## Covered Call — 统一',
                                     '## Sell Put 雷达', '## Cash-secured Put')]
     assert order == sorted(order)

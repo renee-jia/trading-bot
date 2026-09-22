@@ -98,6 +98,9 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
     options_decisions = {}
     ai_portfolio_data = {}
     saas_watch_data = {}
+    dip_layout_data = {}
+    chip_layout_data = {}
+    optics_layout_data = {}
     report_path, _ = report_generator.generate_report(
         results, output_dir="reports", macro_result=macro_result,
         discovery_result=discovery_result,
@@ -105,6 +108,9 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
         sell_put_plan=sell_put_plan,
         ai_portfolio=ai_portfolio_data,
         saas_watch=saas_watch_data,
+        dip_layout=dip_layout_data,
+        chip_layout=chip_layout_data,
+        optics_layout=optics_layout_data,
     )
     print(f"\nReport saved: {report_path}")
 
@@ -152,9 +158,21 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
             import ai_portfolio
             summary_lines.extend(ai_portfolio.email_lines(ai_portfolio_data))
             summary_lines.append("")
+        if chip_layout_data and not chip_layout_data.get("error"):
+            import chip_layout
+            summary_lines.extend(chip_layout.email_lines(chip_layout_data))
+            summary_lines.append("")
+        if optics_layout_data and not optics_layout_data.get("error"):
+            import optics_layout
+            summary_lines.extend(optics_layout.email_lines(optics_layout_data))
+            summary_lines.append("")
         if saas_watch_data and not saas_watch_data.get("error"):
             import saas_watch
             summary_lines.extend(saas_watch.email_lines(saas_watch_data))
+            summary_lines.append("")
+        if dip_layout_data and not dip_layout_data.get("error"):
+            import dip_layout
+            summary_lines.extend(dip_layout.email_lines(dip_layout_data))
             summary_lines.append("")
         summary_lines.extend(
             daily_watch.email_watch_lines(

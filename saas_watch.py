@@ -123,14 +123,14 @@ def build_section(data):
         rows.append([
             f"**{x['ticker']}**", x["stars"], x["view"] or "—", x["risk"] or "—",
             _money(x["price"]), _pct(x["change_1d"]), _pct(x["change_1m"]), _pct(x["change_3m"]),
-            _pct(x["from_high"]),
+            _pct(x["from_high"]), x.get("drawdown_label") or "—",
             f"{x['rsi']:.0f}" if x["rsi"] is not None else "—",
             _ma_cell(x["price"], x["sma_50"]), _ma_cell(x["price"], x["sma_200"]),
-            f"{score}（{x['grade']}）", rec, x["regime"],
+            f"{score}（{x['grade']}）", rec, x.get("add_verdict") or x["buy_label"],
         ])
     lines.append(_table(
-        ["代码", "星级", "定位", "主要风险", "现价", "1日", "1月", "3月", "距高点", "RSI",
-         "50日线", "200日线", "评分", "评级", "Regime"], rows))
+        ["代码", "星级", "定位", "主要风险", "现价", "1日", "1月", "3月", "距高点", "回撤", "RSI",
+         "50日线", "200日线", "评分", "评级", "加仓"], rows))
 
     lines.append("\n### 今日动作\n")
     rows = []
@@ -179,7 +179,8 @@ def email_lines(data):
                if k and x.get("expiry") else (x.get("entry_label") or "put —"))
         lines.append(
             f"  {x['ticker']:<5} {x['stars']:<6} {_money(x['price']):>8} {_pct(x['change_1d']):>7}  "
-            f"{score}{'(' + rec + ')' if rec else ''} | {x['buy_label']} | {put}"
+            f"距高点 {_pct(x['from_high'])}（{x.get('drawdown_label') or '—'}）  "
+            f"{score}{'(' + rec + ')' if rec else ''} | {x.get('add_verdict') or x['buy_label']} | {put}"
         )
     return lines
 

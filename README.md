@@ -161,6 +161,9 @@ email_sender.py                 Email digest + full report attachments
 option_data.py                  Option chains from Alpaca (yfinance fallback) for every options desk
 ai_portfolio.py                 AI Portfolio roll-up section (NVDA/AVGO/GOOGL/META/TSM/MU/AMAT/ORCL/ANET/SNPS)
 saas_watch.py                   SaaS Watch section with fixed star ratings (CRM/NOW/ADBE/DDOG/SNOW/CRWD/NET/WDAY/INTU)
+dip_layout.py                   抄底布局 diversified book (BRK.B/UNH/ABBV/ISRG/JPM/V/MA/ETN/PWR/CAT/COST/WMT/BKNG/FCX/XOM/NEE/CEG/GE/RTX/CB)
+chip_layout.py                  半导体加仓: first-batch zones + 12-name add priority
+optics_layout.py                光学互联 (COHR/LITE/AAOI/CRDO/MRVL/GLW/LYTE)
 alpaca_trader.py                Paper/live execution via Alpaca
 backtest_strategy.py            Strategy vs buy-and-hold (single window)
 backtest_years.py               Per-year sweep vs SPY & Nasdaq
@@ -174,7 +177,7 @@ scripts/                        fetch_paper_performance.py
 
 ## ⚙️ Deployment
 
-- **Production:** GCP Cloud Run job `daily-report` runs `daily_report.py --trade` on trading mornings (Alpaca paper). Secrets are runtime env vars, not baked into the image.
+- **Production:** GCP Cloud Run job `daily-report` runs `daily_report.py --trade` at **7:00 AM Pacific** (10:00 AM ET) on trading days (Alpaca paper). Secrets are runtime env vars, not baked into the image. The 7 AM run uses the previous completed US session.
 - **Local daily agent (macOS):** `./setup_daily.sh install` renders a git-ignored launchd plist from `*.plist.template` and schedules a report-only run (no `--trade`) so it does not double-fill the paper account.
 - **Container:** `docker build -t trading-bot .` — secrets are injected at runtime (`--env`).
 

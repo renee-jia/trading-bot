@@ -98,13 +98,13 @@ def test_section_tables_are_well_formed_and_email_lines_render():
     for line in md.splitlines():
         if line.startswith("|") and not line.startswith("|---"):
             widths.add(line.count("|"))
-    assert widths == {15, 8, 16}  # 14-column tape table, 7-column action table, 15-column watch table
+    assert widths == {16, 8, 17}  # 15-column tape table, 7-column action table, 16-column watch table
     assert "持仓" not in md and "已持有" not in md
     lines = ap.email_lines(data)
     assert lines[0] == "=== AI PORTFOLIO ==="
-    assert any(l.strip().startswith("NVDA") and "$92P" in l and "建议买入" in l for l in lines)
+    assert any(l.strip().startswith("NVDA") and "$92P" in l and "可以抄底" in l for l in lines)
     assert any(l.strip().startswith("SNPS") and "不在今日评分池" in l for l in lines)
-    assert "观察名单:" in lines and any(l.strip().startswith("VRT") and "建议买入" in l for l in lines)
+    assert "观察名单:" in lines and any(l.strip().startswith("VRT") and "可以抄底" in l for l in lines)
 
 
 def test_empty_run_still_renders_every_name():

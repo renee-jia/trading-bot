@@ -68,7 +68,9 @@ def score_stock_at_date(ticker, all_daily, benchmark_daily, end_idx):
 
 
 def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
-                 test_start=None, test_end=None, verbose=True):
+                 test_start=None, test_end=None, verbose=True,
+                 cost_per_side=None, rebalance_interval=14, blend_speed=0.80,
+                 use_scores=True):
     """
     Run backtest comparing strategy vs equal-weight buy-and-hold (and SPY).
 
@@ -83,6 +85,15 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
                   (history before it is still used for warmup/scoring). When
                   omitted, the test period is the last 252 common days.
         verbose: print full tables + rebalance log when True.
+        cost_per_side: override strategy.COST_PER_SIDE (fraction, per side).
+        rebalance_interval: trading days between rebalance decisions. 1 == the
+                  live bot's cadence (it re-examines the book every run).
+        blend_speed: fraction of the gap to target closed per rebalance, same
+                  knob as alpaca_trader.calculate_trades.
+        use_scores: when False, every score is held at 50. The score component
+                  is only 5% of the weight (MOM_PCT=0.95) and never affects
+                  selection, so disabling it isolates the momentum/cadence
+                  effect and makes a daily-cadence sweep tractable.
 
     Returns:
         summary dict (or None if insufficient data).
@@ -136,7 +147,7 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
         print(f"Trading days: {len(test_dates)}")
 
     initial_capital = 100000
-    COST = strategy.COST_PER_SIDE  # per-side transaction cost (spread + slippage)
+    COST = strategy.COST_PER_SIDE if cost_per_side is None else float(cost_per_side)
 
     # ---- BUY & HOLD ----
     # Equal weight on day 1, hold for 1 year. Pay a one-time entry cost so the
@@ -162,7 +173,8 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
     #    day i+1's close. The old code decided and executed on the same close
     #    (look-ahead), inflating returns.
     #  - Transaction costs: each rebalance pays cost on the traded notional.
-    rebalance_interval = 14  # Biweekly
+    total_turnover = 0.0  # sum of |dw| across rebalances, for a turnover stat
+    n_rebalances = 0
     strategy_shares = {}
     strategy_values = []
     rebalance_log = []
@@ -184,6 +196,9 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
             old_w = {t: (strategy_shares[t] * price_today[t] / cur_val) if cur_val > 0 else 0
                      for t in valid_tickers}
             cost = strategy.rebalance_cost(old_w, pending_target, cur_val, COST)
+            total_turnover += sum(abs(pending_target.get(t, 0.0) - old_w.get(t, 0.0))
+                                  for t in set(old_w) | set(pending_target))
+            n_rebalances += 1
             cur_val -= cost
             for t in valid_tickers:
                 alloc = cur_val * pending_target.get(t, 0)
@@ -203,8 +218,11 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
             mom_composite = {}
             for t in valid_tickers:
                 date_pos = all_data[t].index.get_loc(date)
-                result = score_stock_at_date(t, all_data[t], benchmark, date_pos + 1)
-                scores[t] = result["score"] if result else 50
+                if use_scores:
+                    result = score_stock_at_date(t, all_data[t], benchmark, date_pos + 1)
+                    scores[t] = result["score"] if result else 50
+                else:
+                    scores[t] = 50
                 m1 = m3 = 0.0
                 if date_pos >= 21:
                     m1 = price_today[t] / float(all_data[t].iloc[date_pos - 21]["Close"]) - 1
@@ -222,7 +240,6 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
             # Gradual rebalancing toward target, then renormalize to 1.0
             actual_weights = {t: (strategy_shares[t] * price_today[t] / current_value)
                               if current_value > 0 else equal_weight for t in valid_tickers}
-            blend_speed = 0.80
             new_weights = {t: max(0, actual_weights[t] + blend_speed * (target_weights[t] - actual_weights[t]))
                            for t in valid_tickers}
             total_new = sum(new_weights.values())
@@ -285,7 +302,7 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
         print(f"Stocks: {', '.join(valid_tickers)}")
         print(f"'Buy & Hold' = equal-weight basket of the stocks above (NOT the market)")
         print(f"Initial Capital: ${initial_capital:,.0f}")
-        print(f"Rebalance: Every {rebalance_interval} trading days (biweekly), executed T+1")
+        print(f"Rebalance: Every {rebalance_interval} trading day(s), blend {blend_speed:.2f}, executed T+1")
         print(f"Transaction cost: {COST*1e4:.0f} bps/side (spread + slippage)")
         print(f"{'='*70}")
         print("NOTE: Universe is the CURRENT ticker list — results are subject to")
@@ -343,6 +360,10 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
         "strategy_sharpe": strat_sharpe, "bh_sharpe": bh_sharpe,
         "strategy_max_dd": strat_max_dd, "bh_max_dd": bh_max_dd,
         "strategy_vol": strat_volatility, "bh_vol": bh_volatility,
+        "turnover": total_turnover, "n_rebalances": n_rebalances,
+        "turnover_annualized": (total_turnover * 252 / len(test_dates)) if test_dates is not None and len(test_dates) else 0.0,
+        "cost_per_side": COST, "rebalance_interval": rebalance_interval,
+        "blend_speed": blend_speed,
     }
 
 

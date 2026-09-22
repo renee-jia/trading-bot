@@ -12,7 +12,10 @@ def format_markdown(text):
         def priority(part):
             title = part.splitlines()[0]
             groups = [('Executive Summary', 0), ('General', 1), ('Macro Desk', 2),
-                      ('AI Portfolio', 2.5), ('SaaS Watch', 2.6),
+                      ('AI Portfolio', 2.5), ('半导体加仓', 2.55),
+                      ('光学互联', 2.57),
+                      ('SaaS Watch', 2.6),
+                      ('抄底布局', 2.7),
                       ('今日建议买入', 3), ('Options Desk', 4), ('Options Research', 5),
                       ('Covered Call Advisor', 6), ('Covered Call', 6.1),
                       ('Sell Put 雷达', 7), ('Cash-secured Put', 7.1),

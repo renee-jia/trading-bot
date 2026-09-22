@@ -21,7 +21,7 @@ table in the module) and do not move with the tape. Override the list with the
 `SAAS_WATCH` env var (comma-separated); a name without a thesis entry renders
 with `—`.
 
-The section sits right after AI Portfolio and before 今日建议买入 in the
+The section sits right after AI Portfolio and before 抄底布局 in the
 report, and its email block (`=== SAAS WATCH ===`) follows the AI Portfolio
 lines in the summary.
 
@@ -49,11 +49,11 @@ gets a row that says 不在今日评分池.
   `saas_watch` dict argument so `daily_report.run_daily` can print the email
   block without recomputing.
 - `report_format.format_markdown` orders the section between AI Portfolio and
-  今日建议买入.
+  抄底布局.
 
 ## Validation
 
 `scripts/test_saas_watch.py` covers the list override, the fixed thesis, the
 roll-up of cards and plan data, missing names, table widths (15 and 8 columns)
 and the email lines. `scripts/validate_report.py` asserts the section renders
-between AI Portfolio and 今日建议买入.
+between AI Portfolio and 抄底布局.

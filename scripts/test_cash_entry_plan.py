@@ -24,6 +24,17 @@ def test_joint_boundaries(vix,dd,target):
     assert 0<=p['next_batch_cap_pct']<=25
 
 
+def test_next_trigger_is_the_first_unmet_rung():
+    t = cp.next_trigger({'status':'ok','vix':17.1,'drawdown_pct':-2.3,'peak':7798.99})
+    assert t['tier']=='普通回调'
+    assert t['vix_gap']==pytest.approx(0.9)
+    assert t['drawdown_gap_pct']==pytest.approx(0.7)
+    assert t['spx_level']==pytest.approx(7798.99*0.97, rel=1e-4)
+    assert cp.next_trigger(snap()) is None
+    met = cp.next_trigger({'status':'ok','vix':20,'drawdown_pct':-5,'peak':7800})
+    assert met['tier']=='⭐ 好买点'
+
+
 def test_repeat_and_jump_do_not_double_buy():
     s=snap(30,-16)
     first=cp.evaluate(s,today=date(2026,9,8))

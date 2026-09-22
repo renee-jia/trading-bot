@@ -45,7 +45,7 @@ WATCH_SCORE = 58.0
 NOTABLE_1D = 3.0
 NOTABLE_5D = 6.0
 TOP_N = 8
-BUY_LIST_N = 8
+BUY_LIST_N = 10
 
 STOCK_LABELS = {
     "trim_extended": "超买减仓，不跟风",
@@ -167,7 +167,17 @@ def classify_stock(row, held=False):
     d1 = _num(ind.get("change_1d"))
     d5 = _num(ind.get("change_5d"))
     d1m = _num(ind.get("change_1m"))
+    d3m = _num(ind.get("change_3m"))
     rsi = _num(ind.get("rsi"))
+    price = _num(ind.get("price"))
+    sma50 = _num(ind.get("sma_50"))
+    sma200 = _num(ind.get("sma_200"))
+    from_sma50 = _num(ind.get("pct_from_sma50"))
+    from_sma200 = _num(ind.get("pct_from_sma200"))
+    if from_sma50 is None and price and sma50:
+        from_sma50 = round((price / sma50 - 1) * 100, 2)
+    if from_sma200 is None and price and sma200:
+        from_sma200 = round((price / sma200 - 1) * 100, 2)
     from_high = _num(ind.get("pct_from_52w_high", ind.get("from_high")))
     score = _num(sr.get("score"))
     rec = sr.get("recommendation") or ""
@@ -220,7 +230,14 @@ def classify_stock(row, held=False):
         "change_1d": d1,
         "change_5d": d5,
         "change_1m": d1m,
+        "change_3m": d3m,
+        "price": price,
         "from_high": from_high,
+        "from_sma50": from_sma50,
+        "from_sma200": from_sma200,
+        "above_sma200": True if from_sma200 is not None and from_sma200 >= 0 else (
+            False if from_sma200 is not None else None
+        ),
         "rsi": rsi,
         "score": score,
         "recommendation": rec,
@@ -378,6 +395,13 @@ def classify_buy(card, event_status=None, tape=None):
         tier = "add_held"
         note = "已经有仓位。只小加，不按新开仓去打。"
 
+    reasons = discount_reasons(card)
+    setup = dip_setup(card)
+    if reasons and tier in ("buy", "scale_in", "add_held"):
+        note = note + " " + "；".join(reasons[:3]) + "。"
+
+    card["discount_reasons"] = reasons
+    card["dip_setup"] = setup
     card["buy_action"] = tier
     card["buy_label"] = BUY_LABELS[tier]
     card["buy_note"] = note
@@ -386,7 +410,45 @@ def classify_buy(card, event_status=None, tape=None):
         event_status,
         held and tier == "add_held",
     )
+    card["drawdown_label"] = drawdown_label(card.get("from_high"))
+    card["add_verdict"] = add_verdict(card)
     return card
+
+
+def drawdown_label(from_high):
+    """Bucket the 52-week drawdown into a short add/no-add hint."""
+    if from_high is None:
+        return "—"
+    if from_high > -3:
+        return "接近高位"
+    if from_high > -8:
+        return "小回撤"
+    if from_high > -15:
+        return "明显折扣"
+    if from_high > -25:
+        return "深回撤"
+    return "超深回撤"
+
+
+def add_verdict(card):
+    """One-line add/no-add call from an already classified card. Never mentions holdings."""
+    action = card.get("buy_action")
+    dd = card.get("drawdown_label") or drawdown_label(card.get("from_high"))
+    setup = card.get("dip_setup")
+    rsi = card.get("rsi")
+    if action == "buy":
+        return f"{dd}，可以抄底"
+    if action in ("scale_in", "add_held"):
+        return f"{dd}，可以小加"
+    if action == "watch_buy":
+        return f"{dd}，等回踩"
+    if setup == "trend_break":
+        return "跌破200日，先不加"
+    if rsi is not None and rsi >= 70:
+        return "RSI 超买，今日不加"
+    if dd == "接近高位":
+        return "接近高位，今日不加"
+    return card.get("buy_label") or "今日不加"
 
 
 def annotate(ranked, held=None, today=None, events=None, tape=None):
@@ -441,10 +503,71 @@ def buy_picks(cards, include_watch=False, n=BUY_LIST_N):
         picks = [c for c in picks if c["buy_action"] != "watch_buy"]
     picks.sort(key=lambda c: (
         rank.get(c["buy_action"], 9),
-        -(c["score"] or 0),
         c["from_high"] if c.get("from_high") is not None else 0,
+        -(c["score"] or 0),
     ))
     return picks[:n]
+
+
+def discount_reasons(card):
+    """Visible dip facts already on the card; never inferred from holdings."""
+    reasons = []
+    fh = card.get("from_high")
+    if fh is not None and fh <= -8:
+        reasons.append(f"距高点 {fh:.1f}%")
+    d5 = card.get("change_5d")
+    if d5 is not None and d5 <= -2.5:
+        reasons.append(f"5日 {d5:+.1f}%")
+    d1 = card.get("change_1d")
+    if d1 is not None and d1 <= -1.5:
+        reasons.append(f"1日 {d1:+.1f}%")
+    s50 = card.get("from_sma50")
+    if s50 is not None and s50 <= -2:
+        reasons.append(f"低于50日 {s50:.1f}%")
+    s200 = card.get("from_sma200")
+    if s200 is not None and s200 >= 0:
+        reasons.append("仍在200日上方")
+    elif s200 is not None and s200 < 0:
+        reasons.append(f"跌破200日 {s200:.1f}%")
+    return reasons
+
+
+def dip_setup(card):
+    fh = card.get("from_high")
+    above200 = card.get("above_sma200")
+    s50 = card.get("from_sma50")
+    if fh is not None and fh <= -15:
+        return "deep_discount"
+    if above200 is False:
+        return "trend_break"
+    if above200 is True and (
+        (fh is not None and fh <= -8) or (s50 is not None and s50 <= -2)
+    ):
+        return "quality_pullback"
+    if fh is not None and fh > -3:
+        return "near_high"
+    return "none"
+
+
+def dip_candidates(cards, n=BUY_LIST_N):
+    """New-money dips: full buy, or a quality dump that is only scale-in."""
+    ranked = buy_picks(cards, include_watch=False, n=40)
+    dips = []
+    for card in ranked:
+        if card["buy_action"] == "buy":
+            dips.append(card)
+        elif card["stock_action"] == "quality_dip" and card["buy_action"] == "scale_in":
+            dips.append(card)
+    return dips[:n]
+
+
+def add_candidates(cards, n=BUY_LIST_N):
+    taken = {card["ticker"] for card in dip_candidates(cards, n=40)}
+    adds = [
+        card for card in buy_picks(cards, include_watch=False, n=40)
+        if card["buy_action"] in ("scale_in", "add_held") and card["ticker"] not in taken
+    ]
+    return adds[:n]
 
 
 def action_tickets(cards):
@@ -645,54 +768,104 @@ def _load_cards(ranked, held=None, today=None, macro_result=None):
     )
 
 
+def _buy_data_row(card):
+    rsi = f"{card['rsi']:.0f}" if card.get("rsi") is not None else "—"
+    score = f"{card['score']:.1f}" if card.get("score") is not None else "—"
+    return [
+        f"**{card['ticker']}**",
+        (card.get("name") or card["ticker"])[:14],
+        score,
+        _fmt(card.get("change_1d")),
+        _fmt(card.get("change_5d")),
+        _fmt(card.get("from_high")),
+        card.get("drawdown_label") or "—",
+        _fmt(card.get("from_sma50")),
+        _fmt(card.get("from_sma200")),
+        rsi,
+        card.get("add_verdict") or card.get("buy_label") or "—",
+        card.get("buy_size") or "—",
+    ]
+
+
+def _index_dip_lines(macro_result):
+    import cash_entry_plan
+    plan = (macro_result or {}).get("cash_entry_plan")
+    if not isinstance(plan, dict):
+        return []
+    snap = plan.get("snapshot") or {}
+    lines = []
+    if snap.get("status") == "ok":
+        trig = plan.get("next_trigger") or cash_entry_plan.next_trigger(snap)
+        bits = [f"VIX {snap['vix']:.2f}", f"SPX {snap['drawdown_pct']:+.2f}%"]
+        if trig:
+            bits.append(
+                f"下一档「{trig['tier']}」还差 VIX {trig['vix_gap']:.2f}、"
+                f"回撤 {trig['drawdown_gap_pct']:.2f}pct（约 {trig['spx_level']:,.0f}）"
+            )
+        target = plan.get("target_pct")
+        target_s = f"{target:g}%" if isinstance(target, (int, float)) else "—"
+        lines.append(
+            f"**指数现金池：** {' · '.join(bits)}。档位 {plan.get('tier', '等待')}，"
+            f"累计投入目标 {target_s}。个股抄底不要求指数先到这一档。"
+        )
+    trend = (macro_result or {}).get("trend") or {}
+    spy = trend.get("spy_from_high")
+    smh = trend.get("smh_from_high")
+    if spy is not None or smh is not None:
+        lines.append(
+            f"结构：标普距高点 {_fmt(spy)}，半导体 {_fmt(smh)}。"
+            "芯片内部杀估值可以单独看个股折扣，不是指数崩盘。"
+        )
+    return lines
+
+
 def build_buy_section(ranked, macro_result=None, held=None, today=None):
-    """Markdown: explicit 建议买入 / 分批 / 候补 list."""
+    """Markdown: 抄底 first, then 加仓, then names waiting for a better print."""
     cards, event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
-    active = buy_picks(cards, include_watch=False, n=BUY_LIST_N)
-    waiting = [c for c in buy_picks(cards, include_watch=True, n=16)
+    dips = dip_candidates(cards)
+    adds = add_candidates(cards)
+    waiting = [c for c in buy_picks(cards, include_watch=True, n=20)
                if c["buy_action"] == "watch_buy"][:5]
+    headers = ["代码", "名称", "评分", "1日", "5日", "距高点", "回撤", "距50日", "距200日", "RSI", "加仓判断", "仓位"]
 
     lines = [
-        "## 今日建议买入\n",
-        "这一栏和「宏观持有 / 期权冻结」是分开的。指数可以继续拿着，"
-        "个股仍按评分、距高点、RSI 给出买入档位。事件窗口只缩小仓位，不把名单清空。\n",
-        "**规则：** 建议买入 = 评分 ≥ 65 且已有折扣（距高点 ≤ -8% 或 5 日 ≤ -2.5%）；"
-        "建议分批 = 评分 ≥ 60 且位置不贵；候补 = 名字好但今天偏贵。"
-        "超买、弱评分、杠杆 ETF 明确「今日不买」。\n",
-        "**资金口径：** 下表百分比针对各股票预先分配的买入预算，不是每只占总资金的比例；"
-        "若使用 General 的现金入场计划资金池，须先满足该计划的入场条件和本批总额上限。\n",
+        "## 今日建议买入 — 抄底与加仓\n",
+        "这一栏只回答两件事：哪只已经有折扣可以抄，哪只质量还在、只适合小加。"
+        "指数持有或期权冻结不取消个股名单；事件窗口只缩小仓位。\n",
+        "**抄底** = 评分 ≥ 65 且已有折扣（距高点 ≤ −8%、5 日 ≤ −2.5%，或质量股单日急跌）。"
+        "**加仓** = 评分 ≥ 60、位置不贵，或已有仓只加一档。"
+        "超买、弱评分、杠杆 ETF、跌破趋势且评分差 = 今日不买。\n",
+        "**资金口径：** 仓位百分比是该股自己的买入预算，不是占总资金的比例。"
+        "单独现金池仍看 General 的 VIX×SPX 阶梯，两项下限同时到才动那笔钱。\n",
     ]
+    index_lines = _index_dip_lines(macro_result)
+    if index_lines:
+        lines.extend(index_lines)
+        lines.append("")
     if event.get("status") in ("caution", "blackout"):
         nxt = ""
         if event.get("event"):
             nxt = f"{event['event'].isoformat()} {event.get('event_label', '')}"
         lines.append(
             f"事件窗口缩小新开仓规模：临近 {nxt or '宏观数据'}。"
-            "买入名单仍需分批，金额按下表事件档位参考，不要开盘扫货。期权动作以统一评分候选为准。\n"
+            "抄底和加仓都按表内事件档位，不要开盘扫货。\n"
         )
 
-    if active:
-        rows = []
-        for c in active:
-            rows.append([
-                f"**{c['ticker']}**",
-                c["name"][:16],
-                f"{c['score']:.1f}" if c["score"] is not None else "—",
-                _fmt(c["change_1d"]),
-                _fmt(c.get("from_high")),
-                f"{c['rsi']:.0f}" if c["rsi"] is not None else "—",
-                c["buy_label"],
-                c["buy_size"],
-            ])
-        lines.append(_table(
-            ["代码", "名称", "评分", "1日", "距高点", "RSI", "建议", "用多少钱"],
-            rows,
-        ))
-        for c in active[:6]:
+    if dips:
+        lines.append("### 抄底\n")
+        lines.append(_table(headers, [_buy_data_row(c) for c in dips]))
+        for c in dips[:6]:
+            why = "；".join((c.get("discount_reasons") or [])[:3]) or c.get("buy_note")
+            lines.append(f"- **{c['ticker']}**：{c['buy_label']}。{_short(why, 90)}")
+        lines.append("")
+    if adds:
+        lines.append("### 加仓\n")
+        lines.append(_table(headers, [_buy_data_row(c) for c in adds]))
+        for c in adds[:6]:
             lines.append(f"- **{c['ticker']}**：{c['buy_note']}")
         lines.append("")
-    else:
-        lines.append("今天没有过线的买入候选。不是空仓信号，只是没有同时满足评分和价格折扣。\n")
+    if not dips and not adds:
+        lines.append("今天没有过线的抄底或加仓候选。不是空仓信号，只是评分和折扣没有同时成立。\n")
 
     if waiting:
         lines.append("### 候补（等回踩再买）\n")
@@ -703,10 +876,12 @@ def build_buy_section(ranked, macro_result=None, held=None, today=None):
                 f"{c['score']:.1f}" if c["score"] is not None else "—",
                 _fmt(c["change_1d"]),
                 _fmt(c.get("from_high")),
-                _short(c["buy_note"], 60),
+                c.get("drawdown_label") or "—",
+                _fmt(c.get("from_sma50")),
+                _short(c["buy_note"], 50),
             ])
         lines.append(_table(
-            ["代码", "评分", "1日", "距高点", "等什么"],
+            ["代码", "评分", "1日", "距高点", "回撤", "距50日", "等什么"],
             wait_rows,
         ))
     lines.append("---\n")
@@ -845,23 +1020,38 @@ def email_watch_lines(ranked, held=None, today=None, macro_result=None):
     """Short plaintext blocks for the daily email summary."""
     cards, event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
     lines = [
-        "=== 建议买入 ===",
+        "=== 建议买入（抄底 / 加仓） ===",
     ]
-    active = buy_picks(cards, include_watch=False, n=6)
-    if active:
-        for c in active:
+    dips = dip_candidates(cards, n=6)
+    adds = add_candidates(cards, n=6)
+    if dips:
+        lines.append("抄底:")
+        for c in dips:
             lines.append(
-                f"  {c['ticker']:<6} {c['buy_label']}  {_fmt(c['change_1d']):>7}  "
-                f"评分 {c['score']:.1f}  {c['buy_size']}"
+                f"  {c['ticker']:<6} {c['buy_label']}  1日 {_fmt(c['change_1d'])}  "
+                f"距高点 {_fmt(c.get('from_high'))}（{c.get('drawdown_label') or '—'}）  "
+                f"评分 {c['score']:.1f}  {c.get('add_verdict') or c['buy_label']}  {c['buy_size']}"
             )
-    else:
-        lines.append("  今日无过线买入候选")
+    if adds:
+        lines.append("加仓:")
+        for c in adds:
+            lines.append(
+                f"  {c['ticker']:<6} {c['buy_label']}  1日 {_fmt(c['change_1d'])}  "
+                f"距高点 {_fmt(c.get('from_high'))}（{c.get('drawdown_label') or '—'}）  "
+                f"评分 {c['score']:.1f}  {c.get('add_verdict') or c['buy_label']}  {c['buy_size']}"
+            )
+    if not dips and not adds:
+        lines.append("  今日无过线抄底或加仓候选")
     waiting = [c for c in buy_picks(cards, include_watch=True, n=12)
                if c["buy_action"] == "watch_buy"][:4]
     if waiting:
         lines.append("候补:")
         for c in waiting:
-            lines.append(f"  {c['ticker']:<6} {c['buy_label']}  评分 {c['score']:.1f}")
+            lines.append(
+                f"  {c['ticker']:<6} {c['buy_label']}  距高点 {_fmt(c.get('from_high'))} "
+                f"（{c.get('drawdown_label') or '—'}）  "
+                f"评分 {c['score']:.1f}  {c.get('add_verdict') or ''}"
+            )
 
     lines.extend([
         "",
