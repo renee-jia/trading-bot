@@ -117,7 +117,7 @@ Today's date: {now.strftime('%Y-%m-%d')}
 {macro_context}
 
 ## Strategy Context
-- Concentrated momentum strategy: picks top 10 stocks by 3-month + 1-month momentum
+- Concentrated momentum strategy: picks top 10 stocks by 6-month momentum (latest month skipped)
 - Rebalances biweekly, holds for weeks-to-months
 - Needs liquid stocks (>$500M market cap, >500K avg daily volume)
 - Focuses on growth, technology, AI, and high-momentum sectors

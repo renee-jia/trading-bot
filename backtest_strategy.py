@@ -183,6 +183,7 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
     equal_weight = 1.0 / len(valid_tickers)
     current_weights = {t: equal_weight for t in valid_tickers}
     strat_capital = initial_capital * (1 - COST)  # one-way entry cost
+    strat_cash = 0.0  # un-invested remainder (vol targeting), earns nothing
     for t in valid_tickers:
         price = float(all_data[t].loc[start_date, "Close"])
         strategy_shares[t] = (strat_capital * equal_weight) / price
@@ -192,7 +193,7 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
 
         # 1) Execute any rebalance decided on the PREVIOUS bar, at today's close.
         if pending_target is not None:
-            cur_val = sum(strategy_shares[t] * price_today[t] for t in valid_tickers)
+            cur_val = sum(strategy_shares[t] * price_today[t] for t in valid_tickers) + strat_cash
             old_w = {t: (strategy_shares[t] * price_today[t] / cur_val) if cur_val > 0 else 0
                      for t in valid_tickers}
             cost = strategy.rebalance_cost(old_w, pending_target, cur_val, COST)
@@ -200,14 +201,17 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
                                   for t in set(old_w) | set(pending_target))
             n_rebalances += 1
             cur_val -= cost
+            invested = 0.0
             for t in valid_tickers:
                 alloc = cur_val * pending_target.get(t, 0)
                 strategy_shares[t] = alloc / price_today[t] if price_today[t] > 0 else 0
+                invested += alloc
+            strat_cash = max(0.0, cur_val - invested)
             current_weights = pending_target
             pending_target = None
 
         # 2) Track value at today's close (after any execution).
-        strategy_values.append(sum(strategy_shares[t] * price_today[t] for t in valid_tickers))
+        strategy_values.append(sum(strategy_shares[t] * price_today[t] for t in valid_tickers) + strat_cash)
 
         # 3) On rebalance days, DECIDE using data through today; queue for tomorrow.
         if i > 0 and i % rebalance_interval == 0:
@@ -216,6 +220,7 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
             # Score + momentum AS OF today's close (end_idx = date_pos + 1 includes today)
             scores = {}
             mom_composite = {}
+            returns_by_ticker = {}
             for t in valid_tickers:
                 date_pos = all_data[t].index.get_loc(date)
                 if use_scores:
@@ -223,18 +228,27 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
                     scores[t] = result["score"] if result else 50
                 else:
                     scores[t] = 50
-                m1 = m3 = 0.0
+                closes = all_data[t]["Close"].iloc[:date_pos + 1]
+                ind = {}
                 if date_pos >= 21:
-                    m1 = price_today[t] / float(all_data[t].iloc[date_pos - 21]["Close"]) - 1
+                    ind["change_1m"] = (price_today[t] / float(closes.iloc[-22]) - 1) * 100
                 if date_pos >= 63:
-                    m3 = price_today[t] / float(all_data[t].iloc[date_pos - 63]["Close"]) - 1
-                mom_composite[t] = strategy.momentum_composite(m1, m3)
+                    ind["change_3m"] = (price_today[t] / float(closes.iloc[-64]) - 1) * 100
+                m6s = strategy.momentum_6_1_from_close(closes)
+                if m6s is not None:
+                    ind["change_6m_skip1"] = m6s * 100
+                mom_composite[t] = strategy.momentum_signal(ind)
+                returns_by_ticker[t] = closes.tail(strategy.VOL_LOOKBACK + 1).pct_change().dropna().tolist()
 
             # Canonical top-N weights (no macro cash in backtest → renormalize to
             # fully invested below; this isolates the selection/weighting alpha).
+            # Vol targeting (V7) still applies: the exposure it leaves in cash is
+            # preserved by the renormalization below.
             stocks = [{"ticker": t, "score": scores[t], "mom": mom_composite[t]}
                       for t in valid_tickers]
-            target_pct, _ = strategy.compute_target_weights(stocks, macro_score=None)
+            target_pct, _, vol_info = strategy.compute_target_weights_vol_managed(
+                stocks, macro_score=None, returns_by_ticker=returns_by_ticker)
+            exposure = vol_info.get("exposure", 1.0)
             target_weights = {t: target_pct.get(t, 0) / 100 for t in valid_tickers}
 
             # Gradual rebalancing toward target, then renormalize to 1.0
@@ -244,7 +258,8 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
                            for t in valid_tickers}
             total_new = sum(new_weights.values())
             if total_new > 0:
-                new_weights = {t: v / total_new for t, v in new_weights.items()}
+                # Renormalize to the vol-targeted exposure (1.0 when targeting is off).
+                new_weights = {t: v / total_new * exposure for t, v in new_weights.items()}
 
             pending_target = new_weights  # executed at next bar's close (T+1)
 

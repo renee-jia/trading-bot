@@ -393,7 +393,7 @@ Each stock is evaluated across four dimensions:
 
 ## Portfolio Strategy
 
-**Strategy V6: Concentrated Top-10 by Momentum.** In `backtest_strategy.py` (1-year window, current large-cap universe, T+1 execution, 5 bps/side costs) the strategy modestly out-returned equal-weight buy-and-hold (low-single-digit % alpha) but at higher volatility and drawdown — so the edge is return, not risk-adjusted, and it is survivorship-biased toward today's winners. Treat backtested alpha as an upper bound.
+**Strategy V7: Concentrated Top-10 by 6-1 Momentum with a 40% vol target.** On a point-in-time S&P 500 universe (2017–2026, weekly, T+1, 5 bps/side) the 6-month skip-month signal earned Sharpe ~0.8 vs 0.64 for the old 1m/3m blend and 0.88 for SPY; on the current hand-picked universe every number is survivorship-biased upward. Vol targeting is a drawdown control (2022: −10% vs −24%), not a return source. Treat backtested alpha as an upper bound — see docs/BACKTEST_RESULTS.md.
 
 **How it works:**
 1. **Stock Selection:** Select top 10 stocks by **momentum rank** (70% 3-month + 30% 1-month composite return). Momentum is a better filter than score for catching breakouts early.
@@ -745,7 +745,7 @@ def _build_portfolio_weights(ranked, macro_result=None):
     """
     Build suggested portfolio weights using concentrated top-N strategy.
 
-    Strategy V6 (weight math lives in strategy.py, shared with live trading):
+    Strategy V7 (weight math lives in strategy.py, shared with live trading):
     - Select top 10 stocks by momentum (3m+1m composite)
     - Weight blend: 95% momentum ranking + 5% score^2
     - Macro overlay: cash reserve 0-20% based on macro conditions
@@ -766,19 +766,26 @@ def _build_portfolio_weights(ranked, macro_result=None):
     cash_pct = strategy.macro_cash_pct(macro_score)
     cash_label = strategy.macro_cash_label(cash_pct)
 
-    # --- Momentum composite per stock (for display + selection) ---
+    # --- Momentum signal per stock (for display + selection) ---
     mom_data = {}
+    returns_by_ticker = {}
     for r in ranked:
-        ind = r.get("indicators", {})
-        m1 = ind.get("change_1m") / 100 if ind.get("change_1m") is not None else 0.0
-        m3 = ind.get("change_3m") / 100 if ind.get("change_3m") is not None else 0.0
-        mom_data[r["ticker"]] = strategy.momentum_composite(m1, m3)
+        ind = r.get("indicators", {}) or {}
+        mom_data[r["ticker"]] = strategy.momentum_signal(ind)
+        if ind.get("daily_returns"):
+            returns_by_ticker[r["ticker"]] = ind["daily_returns"]
 
     # --- Target weights via the single source of truth ---
     stocks = [{"ticker": r["ticker"], "score": r["score_result"]["score"],
                "mom": mom_data[r["ticker"]]} for r in ranked]
-    weights_pct, cash_pct = strategy.compute_target_weights(stocks, macro_score=macro_score)
-    cash_label = f"{cash_pct*100:.1f}% (includes capital left unallocated by position caps)"
+    weights_pct, cash_pct, vol_info = strategy.compute_target_weights_vol_managed(
+        stocks, macro_score=macro_score, returns_by_ticker=returns_by_ticker)
+    cash_label = f"{cash_pct*100:.1f}% (includes capital left unallocated by position caps"
+    if vol_info.get("realized_vol") is not None and vol_info.get("vol_target"):
+        cash_label += (f"; vol targeting: basket {vol_info['realized_vol']*100:.0f}% vs "
+                       f"target {vol_info['vol_target']*100:.0f}% -> exposure "
+                       f"{vol_info['exposure']*100:.0f}%")
+    cash_label += ")"
     # Expand to all tickers (0 for excluded) for the display tables below.
     final_weights = {r["ticker"]: weights_pct.get(r["ticker"], 0.0) for r in ranked}
 
@@ -793,10 +800,12 @@ def _build_portfolio_weights(ranked, macro_result=None):
     section = "\n---\n\n## Suggested Portfolio Allocation\n\n"
     section += f"**Macro Score: {macro_score:.0f}/100 ({macro_rec})** | "
     section += f"**Cash Reserve: {cash_label}**\n\n"
-    section += f"**Strategy V6:** Concentrated Top-{top_n} by Momentum | "
+    section += f"**Strategy V7:** Concentrated Top-{top_n} by Momentum | "
     section += "95% momentum + 5% score | "
-    section += f"Max position: {max_pos:.0f}%\n\n"
-    section += "Top 10 stocks selected by **momentum rank** (3-month + 1-month composite). "
+    section += f"Max position: {max_pos:.0f}% | Vol target: {strategy.VOL_TARGET*100:.0f}%\n\n"
+    mom_desc = ("6-month return, latest month skipped" if strategy.MOM_MODE == "6_1"
+                else "3-month + 1-month composite")
+    section += f"Top 10 stocks selected by **momentum rank** ({mom_desc}). "
     section += "Capital weighted toward the strongest momentum names with score as a minor quality tilt. "
     section += "Stocks outside top 10 are excluded (0% weight).\n\n"
     section += "This allocation assumes a fresh portfolio; live trading also applies its existing-holding rank buffer.\n\n"
@@ -806,8 +815,8 @@ def _build_portfolio_weights(ranked, macro_result=None):
     not_allocated = [t for t in sorted_stocks if final_weights[t] <= 0.1]
 
     section += f"### Portfolio Holdings ({len(allocated)} stocks)\n\n"
-    section += "| Rank | Ticker | Name | Weight | Score | 1M | 3M | Mom Rank |\n"
-    section += "|------|--------|------|--------|-------|-----|-----|----------|\n"
+    section += "| Rank | Ticker | Name | Weight | Score | 1M | 3M | 6M-1 | Mom Rank |\n"
+    section += "|------|--------|------|--------|-------|-----|-----|------|----------|\n"
 
     for i, t in enumerate(allocated, 1):
         r = next(x for x in ranked if x["ticker"] == t)
@@ -817,6 +826,7 @@ def _build_portfolio_weights(ranked, macro_result=None):
         w = final_weights[t]
         m1 = ind.get("change_1m", 0)
         m3 = ind.get("change_3m", 0)
+        m6s = ind.get("change_6m_skip1")
         mom_rank = top_by_mom.index(t) + 1 if t in top_by_mom else "-"
 
         section += (
@@ -825,6 +835,7 @@ def _build_portfolio_weights(ranked, macro_result=None):
             f"| {sr['score']:.1f} "
             f"| {m1:+.1f}% "
             f"| {m3:+.1f}% "
+            f"| {_fmt_pct(m6s)} "
             f"| #{mom_rank} |\n"
         )
 

@@ -2,11 +2,14 @@
 Alpaca paper/live trading module.
 
 Executes the concentrated top-10 momentum strategy:
-- Scores all stocks, then selects top 10 by *momentum* (not by score)
+- Scores all stocks, then selects top 10 by *momentum* (not by score).
+  Momentum = 6-month return skipping the latest month (MOM_MODE=6_1, V7);
+  MOM_MODE=legacy restores the V6 0.3*1m + 0.7*3m blend.
 - Weights: 95% momentum rank + 5% score^2
-- Rank buffer: held names keep their slot until they fall out of the top 15
+- Rank buffer: held names keep their slot until they fall out of the top 20
   by momentum; new names only enter at top 10 (cuts boundary churn)
-- Macro-based cash reserve (0-20% — ~80%+ always invested)
+- Macro-based cash reserve (0-20%), then portfolio vol targeting: exposure =
+  min(1, VOL_TARGET / realized 20d vol of the target basket). Never levers up.
 - Gradual rebalancing (80% blend toward target); zero-target positions are
   exited in full so whole-share rounding can't strand remnants
 - Min trade size 0.3% of equity (floor $50)
@@ -141,18 +144,25 @@ def compute_target_weights(scored_results, macro_result=None, held=None):
     macro_score = macro_result.get("score", 50) if macro_result else 50
 
     stocks = []
+    returns_by_ticker = {}
     for r in scored_results:
-        ind = r.get("indicators", {})
-        m1 = ind.get("change_1m") / 100 if ind.get("change_1m") is not None else 0.0
-        m3 = ind.get("change_3m") / 100 if ind.get("change_3m") is not None else 0.0
+        ind = r.get("indicators", {}) or {}
         stocks.append({
             "ticker": r["ticker"],
             "score": r["score_result"]["score"],
-            "mom": strategy.momentum_composite(m1, m3),
+            "mom": strategy.momentum_signal(ind),
         })
+        if ind.get("daily_returns"):
+            returns_by_ticker[r["ticker"]] = ind["daily_returns"]
 
-    return strategy.compute_target_weights(stocks, macro_score=macro_score,
-                                           held=held)
+    weights, cash_pct, info = strategy.compute_target_weights_vol_managed(
+        stocks, macro_score=macro_score, held=held,
+        returns_by_ticker=returns_by_ticker)
+    rv = info.get("realized_vol")
+    if rv is not None and info.get("vol_target"):
+        print(f"Vol target: basket realized vol {rv*100:.0f}% vs target "
+              f"{info['vol_target']*100:.0f}% -> exposure {info['exposure']*100:.0f}%")
+    return weights, cash_pct
 
 
 def get_current_positions(client):

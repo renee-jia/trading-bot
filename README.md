@@ -68,7 +68,7 @@ The score for every stock is produced by a panel of independent analysis agents,
                                         ▼
                          ┌─────────────────────────────┐
                          │   🔒 SCORER  →  0–100 score │  confidence- & regime-adjusted
-                         │   🔒 STRATEGY → target wts  │  top-10 momentum, max 25%/name
+                         │   🔒 STRATEGY → target wts  │  top-10 by 6-1 momentum, 25% cap, 40% vol target
                          └──────────────┬──────────────┘
                                         ▼
                          ┌─────────────────────────────┐
@@ -93,6 +93,8 @@ The score for every stock is produced by a panel of independent analysis agents,
 | 📰 Sentiment | 15% | News headline analysis with recency decay |
 
 Scores are confidence-adjusted and regime-aware (conservative in bear markets, a slight boost in bull markets).
+
+**Portfolio construction (Strategy V7, 2026-09-28):** the live book is the top-10 by **6-month momentum skipping the latest month** (held names survive to rank 20), ladder-weighted with a 25% cap, a 0–20% macro cash reserve, and a **40% portfolio vol target** (exposure = min(1, 0.40 / 20-day realized vol of the target basket), never leveraged). The previous 1m/3m signal is one env var away (`MOM_MODE=legacy`); `VOL_TARGET=0` disables targeting. Evidence, including a point-in-time S&P 500 check, is in [docs/BACKTEST_RESULTS.md](docs/BACKTEST_RESULTS.md).
 
 | Score | Recommendation | Grade |
 |:-----:|----------------|:-----:|
@@ -178,7 +180,7 @@ scripts/                        fetch_paper_performance.py
 
 ## ⚙️ Deployment
 
-- **Production:** GCP Cloud Run job `daily-report` runs `daily_report.py --trade` at **7:00 AM Pacific** (10:00 AM ET) on trading days (Alpaca paper). Secrets are runtime env vars, not baked into the image (`ALPACA_*`, `REPORT_EMAIL_*`, `ANTHROPIC_API_KEY`, `CC_WATCH`); the job runs on 2 vCPU / 4 GiB with a 60-minute timeout. The 7 AM run uses the previous completed US session.
+- **Production:** GCP Cloud Run job `daily-report` runs `daily_report.py --trade` at **7:00 AM Pacific** (10:00 AM ET) on trading days (Alpaca paper). Secrets are runtime env vars, not baked into the image (`ALPACA_*`, `REPORT_EMAIL_*`, `ANTHROPIC_API_KEY`, `CC_WATCH`; strategy knobs `MOM_MODE`, `VOL_TARGET`, `VOL_LOOKBACK`, `REBALANCE_INTERVAL_DAYS` are optional and default to the V7 settings); the job runs on 2 vCPU / 4 GiB with a 60-minute timeout. The 7 AM run uses the previous completed US session.
 - **After every `gcloud run jobs deploy`,** re-check the env vars with `gcloud run jobs describe daily-report --region us-central1` — a redeploy has silently dropped them before.
 - **Local daily agent (macOS):** `./setup_daily.sh install` renders a git-ignored launchd plist from `*.plist.template` and schedules a report-only run (no `--trade`) so it does not double-fill the paper account.
 - **Container:** `docker build -t trading-bot .` — secrets are injected at runtime (`--env`).

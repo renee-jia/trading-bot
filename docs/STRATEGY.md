@@ -123,6 +123,38 @@ python main.py --quick --no-alpha       # Fastest mode
 - No idle cost — container only runs during the ~7 min analysis
 - Local backup via macOS launchd (runs when laptop wakes up)
 
+## Strategy V7 — momentum window & vol targeting (2026-09-28)
+
+Two changes to the portfolio construction, both env-switchable (see
+`docs/BACKTEST_RESULTS.md`, 2026-09-28 entry, for the evidence on the live
+universe and on a point-in-time S&P 500):
+
+| | V6 | V7 (default) |
+|---|---|---|
+| Momentum signal | 0.3 × 1-month + 0.7 × 3-month return | **6-month return ending one month ago** (`indicators.change_6m_skip1`, i.e. close[t−21] / close[t−126] − 1). Falls back to the V6 blend when a name has fewer than 127 bars. |
+| Hold-until rank | held names survive while ranked ≤ 15 | ≤ **20** (entry still requires rank ≤ 10) |
+| Exposure | 1 − macro cash | (1 − macro cash) × **min(1, 0.40 / realized vol)**, where realized vol is the annualized 20-day vol of the *target basket* (ladder weights, `indicators.daily_returns`). Never levers up; the remainder sits in cash. |
+
+Why: the 1m/3m window sits in the short-term-reversal zone — on an unbiased
+point-in-time S&P 500 universe it earned Sharpe 0.64 with 23×/yr turnover,
+below simply holding SPY (0.88). Every 6–12-month skip-month window beats it on
+both universes at every rebalance-day offset with roughly half the turnover.
+Vol targeting is the one overlay with a solid replication record specifically
+for momentum (Barroso & Santa-Clara 2015; Cederburg et al. 2020); here it cuts
+2022 from −24% to −10% and the max drawdown by ~12 points on the traded
+universe at little Sharpe cost.
+
+Env knobs (all optional): `MOM_MODE=6_1|legacy`, `VOL_TARGET=0.40` (0 disables),
+`VOL_LOOKBACK=20`. Selection, ladder weights, 25% cap, weekly cadence,
+blend 0.20, 2% band and the macro cash reserve are unchanged.
+
+Not shipped after testing: risk-adjusted / residual / frog-in-the-pan
+momentum (lower vol, no Sharpe gain over raw 6-1), SPY 200-SMA / 12-month /
+4-state regime filters (cost more than they save on both universes), sector
+caps, inverse-vol weights. Open items with positive evidence on both
+universes: a 20% per-position trailing stop (needs per-position state) and
+tranching the rebalance across the week (rebalance-day luck is ±10 pts/yr).
+
 ## Rebalance Cadence & Turnover (reviewed 2026-09-20)
 
 The live book ran a **daily** cadence with `blend_speed=0.80` and a 0.3%-of-equity

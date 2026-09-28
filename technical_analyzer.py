@@ -731,6 +731,14 @@ def _get_latest_indicators(data, params):
         indicators["change_1m"] = round(float((close.iloc[-1] / close.iloc[-21] - 1) * 100), 2)
     if len(close) >= 63:
         indicators["change_3m"] = round(float((close.iloc[-1] / close.iloc[-63] - 1) * 100), 2)
+    if len(close) >= 127:
+        # 6-month return ending one month ago (skip-month momentum, V7 signal)
+        indicators["change_6m_skip1"] = round(
+            float((close.iloc[-22] / close.iloc[-127] - 1) * 100), 2)
+    # Recent daily simple returns (oldest first) for portfolio-level vol targeting.
+    if len(close) >= 2:
+        tail = close.tail(61).pct_change().dropna()
+        indicators["daily_returns"] = [round(float(x), 6) for x in tail.tolist()]
 
     lookback = min(len(close), 252)
     if lookback >= 20:
