@@ -8,7 +8,9 @@ Markdown renderer with inline table styles and all stock details expanded.
 Raw HTML from report text is escaped, and unsafe link schemes are rejected by
 the Markdown parser. No scripts, remote fonts, or other assets are needed.
 
-Reading order: overview, General and cash plan, macro desk, the AI Portfolio
+Reading order: overview, General and cash plan, macro desk, the Regime Desk
+(`macro_regime.py`: 宏观回撤与加仓时机 — quant dashboard, entry ladder, reduce
+triggers, catalyst calendar from `macro_events.py`, Claude synthesis), the AI Portfolio
 roll-up (`AI_PORTFOLIO.md`), the 半导体加仓 book (`CHIP_LAYOUT.md`), the
 光学互联 sleeve (`OPTICS_LAYOUT.md`), the SaaS Watch list (`SAAS_WATCH.md`), the
 抄底布局 diversified book (`DIP_LAYOUT.md`), the 电力加仓 ladder

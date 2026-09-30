@@ -178,6 +178,14 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
     # Build macro snapshot (daily score, news, index table)
     macro_section = _build_macro_section(macro_result) if macro_result else ""
 
+    # Regime Desk — 宏观回撤与加仓时机 (quant dashboard + Claude synthesis)
+    try:
+        import macro_regime
+        regime_section = macro_regime.build_section(
+            macro_regime.build(ranked, macro_result=macro_result))
+    except Exception as e:
+        regime_section = f"## 宏观回撤与加仓时机 — Regime Desk\n\n*Section failed: {e}*\n\n---\n"
+
     # AI / Semiconductor / Chip / Storage thematic sector analysis
     ai_semi_section = _build_ai_semi_section(ranked)
 
@@ -337,6 +345,8 @@ def _build_report(ranked, macro_result=None, discovery_result=None, options_rese
 {trend_section}
 
 {macro_desk}
+
+{regime_section}
 
 {ai_portfolio_section}
 

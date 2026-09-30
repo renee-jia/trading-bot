@@ -151,6 +151,9 @@ data_fetcher.py                 Prices, news, benchmarks (yfinance)
 technical_analyzer.py           Trend / momentum / volume / volatility
 trend_analyzer.py               Relative strength vs SPY, market regime
 macro_analyzer.py               Market regime, 1w/1m/6m stance, rates tape
+macro_regime.py                 Regime Desk: 宏观回撤与加仓时机 — breadth, rates/credit/vol, analog stats, entry ladder, reduce triggers + Claude synthesis (web search)
+macro_events.py                 Hand-maintained catalyst calendar for the Regime Desk (warns when it runs low)
+sp500_members.py                S&P 500 member list for the daily breadth read
 daily_watch.py                  Options desk, config watch, top movers
 covered_call_advisor.py         Covered-call ladders for a fixed watch list (CC_WATCH)
 sell_put_advisor.py             Cash-secured puts on panic dips
