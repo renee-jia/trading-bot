@@ -155,6 +155,42 @@ caps, inverse-vol weights. Open items with positive evidence on both
 universes: a 20% per-position trailing stop (needs per-position state) and
 tranching the rebalance across the week (rebalance-day luck is ±10 pts/yr).
 
+## Rotation Execution Fix (2026-10-07)
+
+The first V7 rebalance (2026-10-05) rotated 8 of 10 names and exposed two
+execution bugs in `alpaca_trader.py`:
+
+1. **Renormalization pushed held names further from target.** Exits were zeroed, new
+   names got 20% of their gap, and the blended book (~46%) was scaled up 2.08x
+   to 95%. The scale-up landed on held names: OKTA (target 3.2%, held 15.9%)
+   was planned at 27.8% and **bought**. The 2% band was measured against the
+   target, so it let OKTA's trade through, but the trade was then sized against
+   the inflated blend.
+2. **Buys were budgeted from pre-sell cash.** $18.7k cash minus the 5% reserve
+   gave a $12.4k budget against $53.9k of buys; ~$65k of exit proceeds sat idle.
+   The book ended the day 59% cash, frozen by the weekly cadence until 10/12.
+
+Fix: `plan_weights` (shared with `backtest_strategy.py`) exits zero-target names
+in full, holds names inside the band, and blends the rest 20% toward target. It
+then hands any idle capital to names still below target, pro rata to their gap
+and never past target. `calculate_trades` refuses any order that moves a
+name away from its target. `run_trading` submits sells first, waits for fills
+(when the market is open), re-reads cash, and budgets buys from that.
+Regression tests replay the 10/05 inputs (`scripts/test_alpaca_trader.py`).
+
+The backtest previously blended exits, had no band and no rank buffer, so it
+did not model live execution. It now runs `plan_weights` with the live defaults
+(weekly, blend 0.20, 2% band, held-name buffer). Same data, 170-name universe,
+scores off, both runs weekly/0.20 (absolute levels are survivorship-biased; compare
+rows only):
+
+| Window | Execution model | Return | Sharpe | MaxDD | Turnover/yr |
+|---|---|---|---|---|---|
+| Live (2026-03-13 →) | old backtest | +38.9% | 1.85 | 20.3% | 6.1x |
+| Live (2026-03-13 →) | plan_weights | +42.3% | 1.95 | 18.2% | 7.2x |
+| Trailing 12m | old backtest | +89.2% | 1.90 | 19.3% | 5.6x |
+| Trailing 12m | plan_weights | +78.5% | 1.79 | 16.4% | 6.5x |
+
 ## Rebalance Cadence & Turnover (reviewed 2026-09-20)
 
 The live book ran a **daily** cadence with `blend_speed=0.80` and a 0.3%-of-equity

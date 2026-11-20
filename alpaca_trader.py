@@ -10,11 +10,13 @@ Executes the concentrated top-10 momentum strategy:
   by momentum; new names only enter at top 10 (cuts boundary churn)
 - Macro-based cash reserve (0-20%), then portfolio vol targeting: exposure =
   min(1, VOL_TARGET / realized 20d vol of the target basket). Never levers up.
-- Gradual rebalancing (80% blend toward target); zero-target positions are
-  exited in full so whole-share rounding can't strand remnants
+- Weekly cadence (REBALANCE_INTERVAL_DAYS=5), 2% tolerance band, 20% blend
+  toward target; zero-target positions are exited in full so whole-share
+  rounding can't strand remnants, and cash freed by exits goes to names still
+  below target (plan_weights)
 - Min trade size 0.3% of equity (floor $50)
-- Buys are capped to cash minus the macro reserve — never funded with margin
-- Examines the account and rebalances every run
+- Sells execute first; buys are then capped to post-sell cash minus the macro
+  reserve — never funded with margin
 
 Usage:
     # As part of daily report:
@@ -186,6 +188,57 @@ def get_account_value(client):
     return float(account.equity)
 
 
+def plan_weights(current_weights, target_weights, investable_pct,
+                 blend_speed=0.20, band_pct=0.02):
+    """Weights (in %) to rebalance toward this run. Shared with backtest_strategy.
+
+    - Names with a zero target exit in full (0).
+    - Names within band_pct (fraction of equity) of their target hold as-is.
+    - Every other name moves blend_speed of the way to its target.
+    - Capital left idle — from full exits or from cash above the reserve — goes
+      to names still below target, pro rata to their remaining gap and never
+      past target. If the plan instead exceeds investable_pct, the movable
+      names are scaled down.
+
+    The earlier code renormalized the whole blended book up to investable_pct.
+    When a rotation zeroed out half the book, that ~2x scale-up landed on the
+    names already held: on 2026-10-05 OKTA (target 3.2%, held 15.9%) was
+    planned at 27.8% and bought, while the new names got 20% of their gap.
+    """
+    band = band_pct * 100
+    planned, fixed = {}, set()
+    for t in set(current_weights) | set(target_weights):
+        cw = current_weights.get(t, 0.0)
+        tw = target_weights.get(t, 0.0)
+        if tw <= 0:
+            planned[t] = 0.0
+            fixed.add(t)
+        elif abs(tw - cw) < band:
+            planned[t] = cw
+            fixed.add(t)
+        else:
+            planned[t] = cw + blend_speed * (tw - cw)
+
+    total = sum(planned.values())
+    if total < investable_pct:
+        gaps = {t: target_weights[t] - planned[t] for t in planned
+                if t not in fixed and target_weights.get(t, 0) > planned[t]}
+        gap_sum = sum(gaps.values())
+        if gap_sum > 0:
+            fill = min(investable_pct - total, gap_sum)
+            for t, g in gaps.items():
+                planned[t] += g * fill / gap_sum
+    elif total > investable_pct:
+        movable = sum(planned[t] for t in planned if t not in fixed)
+        excess = total - investable_pct
+        if movable > 0:
+            scale = max(0.0, 1 - excess / movable)
+            for t in planned:
+                if t not in fixed:
+                    planned[t] *= scale
+    return planned
+
+
 def calculate_trades(target_weights, current_positions, account_value,
                      cash_pct, blend_speed=0.20, band_pct=0.02):
     """
@@ -211,10 +264,6 @@ def calculate_trades(target_weights, current_positions, account_value,
     Returns:
         list of dicts: [{ticker, side, qty, dollar_amount, reason}]
     """
-    from alpaca.trading.enums import OrderSide
-
-    investable = account_value * (1 - cash_pct)
-
     # Current weights
     current_weights = {}
     for ticker, pos in current_positions.items():
@@ -223,24 +272,11 @@ def calculate_trades(target_weights, current_positions, account_value,
     # All tickers (union of current positions and targets)
     all_tickers = set(list(target_weights.keys()) + list(current_positions.keys()))
 
-    # Blend toward target (gradual rebalancing). Names with a ZERO target are
-    # exited outright (blended weight 0, full-qty sell below) — blending an
-    # exit leaves a tail that whole-share rounding can never sell off, which is
-    # how the book once accumulated dozens of stuck 1-share remnants.
-    blended_weights = {}
-    for ticker in all_tickers:
-        current_w = current_weights.get(ticker, 0)
-        target_w = target_weights.get(ticker, 0)
-        if target_w <= 0:
-            blended_weights[ticker] = 0.0
-        else:
-            blended_weights[ticker] = current_w + blend_speed * (target_w - current_w)
-
-    # Normalize blended weights
-    total_blended = sum(max(0, w) for w in blended_weights.values())
-    if total_blended > 0:
-        scale = (1 - cash_pct) * 100 / total_blended
-        blended_weights = {t: max(0, w * scale) for t, w in blended_weights.items()}
+    # Names with a ZERO target are exited outright (full-qty sell below) —
+    # blending an exit leaves a tail that whole-share rounding can never sell
+    # off, which is how the book once accumulated dozens of stuck remnants.
+    blended_weights = plan_weights(current_weights, target_weights,
+                                   (1 - cash_pct) * 100, blend_speed, band_pct)
 
     # Minimum trade size: 0.3% of equity (floor $50). The old flat $50 threshold
     # let daily rank shuffles generate hundreds of tiny rebalance orders.
@@ -273,6 +309,9 @@ def calculate_trades(target_weights, current_positions, account_value,
         # size floor for the orders that do pass.
         target_full = account_value * target_weights.get(ticker, 0) / 100
         if abs(target_full - current_value) < account_value * band_pct:
+            continue
+        # Never trade away from target: no buys above it, no sells below it.
+        if (diff > 0) != (target_full > current_value):
             continue
 
         # Skip tiny trades (< min_trade or < 1% of position)
@@ -417,6 +456,46 @@ def execute_trades(client, trades, dry_run=False):
     print(f"{'='*60}")
 
     return results
+
+
+_TERMINAL_ORDER_STATES = {"filled", "canceled", "expired", "rejected",
+                          "done_for_day", "replaced"}
+
+
+def _wait_for_fills(client, results, timeout=120, poll=3):
+    """Block until every submitted order is terminal, or the timeout passes.
+
+    When the market is closed the orders only queue, so there's nothing to
+    wait for — buys are then budgeted off the cash already in the account.
+    """
+    import time
+
+    ids = [r["order_id"] for r in results if r.get("status") == "submitted"]
+    if not ids:
+        return
+    try:
+        if not client.get_clock().is_open:
+            print("  Market closed — sells are queued; buys use current cash only.")
+            return
+    except Exception as e:
+        print(f"  Warning: could not read market clock ({e})")
+    deadline = time.monotonic() + timeout
+    pending = set(ids)
+    while pending and time.monotonic() < deadline:
+        for oid in list(pending):
+            try:
+                status = str(client.get_order_by_id(oid).status.value).lower()
+            except Exception:
+                continue
+            if status in _TERMINAL_ORDER_STATES:
+                pending.discard(oid)
+        if pending:
+            time.sleep(poll)
+    if pending:
+        print(f"  Warning: {len(pending)} sell order(s) still open after {timeout}s — "
+              f"buys use the cash settled so far.")
+    else:
+        print(f"  All {len(ids)} sell order(s) settled.")
 
 
 def _calendar_days_since_last_fill(client):
@@ -576,23 +655,6 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
         print("\nNo trades needed — portfolio is already aligned.")
         return {"status": "no_trades_needed"}
 
-    # Cash guard: buying_power includes margin and can stay positive while
-    # cash is negative. Cap buys to cash minus the macro reserve so a run
-    # never leverages the book. Same-batch sell proceeds are not counted.
-    budget = buy_budget(cash, buying_power, account_value, cash_pct)
-    buy_demand = sum(t["dollar_amount"] for t in trades if t["side"] == "buy")
-    trades, clipped = clip_buys_to_budget(trades, budget)
-    if clipped:
-        if budget <= 0:
-            print(f"\nCash ${cash:,.0f} at/below {cash_pct*100:.0f}% reserve — "
-                  f"skipping ${buy_demand:,.0f} of buys this run (sells still go).")
-        else:
-            print(f"\nBuy budget ${budget:,.0f} (cash minus reserve) < demand "
-                  f"${buy_demand:,.0f} — scaled buys to fit.")
-    if not trades:
-        print("\nNo trades left after cash guard.")
-        return {"status": "no_trades_needed", "reason": "buy_budget_zero"}
-
     # Hard notional cap for live runs: abort entirely (don't partially execute an
     # unexpectedly large rebalance) if total $ traded exceeds the configured cap.
     if max_notional is None:
@@ -605,8 +667,43 @@ def run_trading(scored_results, macro_result=None, paper=True, dry_run=False,
             return {"status": "aborted", "reason": "notional_cap_exceeded",
                     "total_notional": total_notional, "max_notional": max_notional}
 
-    # Execute
-    results = execute_trades(client, trades, dry_run=dry_run)
+    # Sells first, then size buys from the cash that is actually there. Budgeting
+    # buys off pre-sell cash starved the 2026-10-05 rotation: ~$65k of exits
+    # funded only $12k of buys and the book sat 59% in cash until the next slot.
+    sells = [t for t in trades if t["side"] == "sell"]
+    buys = [t for t in trades if t["side"] == "buy"]
+    results = execute_trades(client, sells, dry_run=dry_run) if sells else []
+
+    if buys:
+        if sells and not dry_run:
+            _wait_for_fills(client, results)
+            account = client.get_account()
+            cash = float(getattr(account, "cash", 0) or 0)
+            buying_power = float(getattr(account, "buying_power", 0) or 0)
+        elif sells:
+            # Dry run: assume the sells fill at their marked value.
+            cash += sum(t["dollar_amount"] for t in sells)
+
+        # Cash guard: buying_power includes margin and can stay positive while
+        # cash is negative. Cap buys to cash minus the macro reserve so a run
+        # never leverages the book.
+        budget = buy_budget(cash, buying_power, account_value, cash_pct)
+        buy_demand = sum(t["dollar_amount"] for t in buys)
+        buys, clipped = clip_buys_to_budget(buys, budget)
+        if clipped:
+            if budget <= 0:
+                print(f"\nCash ${cash:,.0f} at/below {cash_pct*100:.0f}% reserve — "
+                      f"skipping ${buy_demand:,.0f} of buys this run.")
+            else:
+                print(f"\nBuy budget ${budget:,.0f} (cash minus reserve) < demand "
+                      f"${buy_demand:,.0f} — scaled buys to fit.")
+        if buys:
+            results += execute_trades(client, buys, dry_run=dry_run)
+        trades = sells + buys
+
+    if not trades:
+        print("\nNo trades left after cash guard.")
+        return {"status": "no_trades_needed", "reason": "buy_budget_zero"}
 
     # --- Post-trade verification ---
     _verify_trades(client, trades, results, target_weights, account_value, cash_pct, dry_run)
@@ -651,7 +748,8 @@ def _verify_trades(client, trades, results, target_weights, account_value,
 
     open_orders = client.get_orders()
     if open_orders:
-        print(f"\n  Pending orders: {len(open_orders)} (will fill at next market open)")
+        print(f"\n  Open orders not yet filled: {len(open_orders)} "
+              f"(positions below exclude them)")
         for o in open_orders:
             print(f"    {o.symbol:<8} {o.side.name:<4} {int(float(o.qty)):>5} shares — {o.status.name}")
     else:

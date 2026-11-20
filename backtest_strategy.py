@@ -27,6 +27,7 @@ import technical_analyzer
 import trend_analyzer
 import scorer
 import strategy
+from alpaca_trader import plan_weights
 from configs import ANALYZER_WEIGHTS
 
 # Alpha score is shared with live trading / report via strategy.py
@@ -69,8 +70,8 @@ def score_stock_at_date(ticker, all_daily, benchmark_daily, end_idx):
 
 def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
                  test_start=None, test_end=None, verbose=True,
-                 cost_per_side=None, rebalance_interval=14, blend_speed=0.80,
-                 use_scores=True):
+                 cost_per_side=None, rebalance_interval=5, blend_speed=0.20,
+                 band_pct=0.02, use_scores=True):
     """
     Run backtest comparing strategy vs equal-weight buy-and-hold (and SPY).
 
@@ -88,8 +89,9 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
         cost_per_side: override strategy.COST_PER_SIDE (fraction, per side).
         rebalance_interval: trading days between rebalance decisions. 1 == the
                   live bot's cadence (it re-examines the book every run).
-        blend_speed: fraction of the gap to target closed per rebalance, same
-                  knob as alpaca_trader.calculate_trades.
+        blend_speed, band_pct: same knobs as alpaca_trader.calculate_trades;
+                  the rebalance plan is alpaca_trader.plan_weights itself.
+                  Defaults match the live book (weekly, 0.20, 2% band).
         use_scores: when False, every score is held at 50. The score component
                   is only 5% of the weight (MOM_PCT=0.95) and never affects
                   selection, so disabling it isolates the momentum/cadence
@@ -246,20 +248,21 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
             # preserved by the renormalization below.
             stocks = [{"ticker": t, "score": scores[t], "mom": mom_composite[t]}
                       for t in valid_tickers]
-            target_pct, _, vol_info = strategy.compute_target_weights_vol_managed(
-                stocks, macro_score=None, returns_by_ticker=returns_by_ticker)
-            exposure = vol_info.get("exposure", 1.0)
-            target_weights = {t: target_pct.get(t, 0) / 100 for t in valid_tickers}
-
-            # Gradual rebalancing toward target, then renormalize to 1.0
             actual_weights = {t: (strategy_shares[t] * price_today[t] / current_value)
-                              if current_value > 0 else equal_weight for t in valid_tickers}
-            new_weights = {t: max(0, actual_weights[t] + blend_speed * (target_weights[t] - actual_weights[t]))
-                           for t in valid_tickers}
-            total_new = sum(new_weights.values())
-            if total_new > 0:
-                # Renormalize to the vol-targeted exposure (1.0 when targeting is off).
-                new_weights = {t: v / total_new * exposure for t, v in new_weights.items()}
+                              if current_value > 0 else 0.0 for t in valid_tickers}
+            # Same rank buffer as live: held = positions of at least 1% of equity.
+            held = {t for t, w in actual_weights.items() if w >= 0.01}
+            target_pct, _, vol_info = strategy.compute_target_weights_vol_managed(
+                stocks, macro_score=None, held=held,
+                returns_by_ticker=returns_by_ticker)
+
+            # Same rebalance plan as the live trader (alpaca_trader.plan_weights):
+            # full exits, tolerance band, blend, exit proceeds to underweight names.
+            # target_pct already carries the vol-targeting cash (no macro cash here).
+            plan = plan_weights({t: w * 100 for t, w in actual_weights.items()},
+                                target_pct, sum(target_pct.values()),
+                                blend_speed=blend_speed, band_pct=band_pct)
+            new_weights = {t: plan.get(t, 0.0) / 100 for t in valid_tickers}
 
             pending_target = new_weights  # executed at next bar's close (T+1)
 
@@ -378,7 +381,7 @@ def run_backtest(tickers, lookback_years=2, all_data=None, benchmark=None,
         "turnover": total_turnover, "n_rebalances": n_rebalances,
         "turnover_annualized": (total_turnover * 252 / len(test_dates)) if test_dates is not None and len(test_dates) else 0.0,
         "cost_per_side": COST, "rebalance_interval": rebalance_interval,
-        "blend_speed": blend_speed,
+        "blend_speed": blend_speed, "band_pct": band_pct,
     }
 
 
