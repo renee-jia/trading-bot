@@ -819,8 +819,12 @@ def _index_dip_lines(macro_result):
     return lines
 
 
-def build_buy_section(ranked, macro_result=None, held=None, today=None, compact=False):
-    """Markdown: 抄底 first, then 加仓, then names waiting for a better print."""
+def build_buy_section(ranked, macro_result=None, held=None, today=None, compact=False, standalone=True):
+    """Markdown: 抄底 first, then 加仓, then names waiting for a better print.
+
+    standalone=False is for the full report, where the index cash ladder, the
+    index structure and the per-name no-buy calls already have their own home.
+    """
     cards, event = _load_cards(ranked, held=held, today=today, macro_result=macro_result)
     dips = dip_candidates(cards)
     adds = add_candidates(cards)
@@ -865,7 +869,9 @@ def build_buy_section(ranked, macro_result=None, held=None, today=None, compact=
         "**资金口径：** 仓位百分比是该股自己的买入预算，不是占总资金的比例。"
         "单独现金池仍看 General 的 VIX×SPX 阶梯，两项下限同时到才动那笔钱。\n",
     ]
-    index_lines = _index_dip_lines(macro_result)
+    if not standalone:
+        lines[1:2] = []
+    index_lines = _index_dip_lines(macro_result) if standalone else []
     if index_lines:
         lines.extend(index_lines)
         lines.append("")
@@ -881,7 +887,7 @@ def build_buy_section(ranked, macro_result=None, held=None, today=None, compact=
     if dips:
         lines.append("### 抄底\n")
         lines.append(_table(headers, [_buy_data_row(c) for c in dips]))
-        for c in dips[:6]:
+        for c in dips[:6] if standalone else []:
             why = "；".join((c.get("discount_reasons") or [])[:3]) or c.get("buy_note")
             lines.append(f"- **{c['ticker']}**：{c['buy_label']}。{_short(why, 90)}")
         lines.append("")
@@ -911,6 +917,14 @@ def build_buy_section(ranked, macro_result=None, held=None, today=None, compact=
             ["代码", "评分", "1日", "距高点", "回撤", "距50日", "等什么"],
             wait_rows,
         ))
+    if not standalone:
+        lines.append("其余个股今天不买的原因见下方「个股总表」的今日判断。\n")
+    for action, label in () if not standalone else (('trim_extended', '过度延伸，减仓观察'),
+                          ('no_chase', '急涨，不追'), ('avoid_knife', '弱势急跌，不接')):
+        names = [c['ticker'] for c in cards if c.get('stock_action') == action]
+        if names:
+            shown = '、'.join(names[:8]) + (f' 等 {len(names)} 只' if len(names) > 8 else '')
+            lines.append(f"**{label}：** {shown}。逐股原因见 Detailed Analysis。\n")
     lines.append("---\n")
     return "\n".join(lines)
 
@@ -939,7 +953,7 @@ def build_options_desk_section(ranked, macro_result=None, held=None, today=None,
         if missing:
             lines.append(f'其余 {missing} 只：等待：本次期权链未评估或数据不可用。\n')
         if not any((c.get('options_decision') or {}).get('candidates') for c in assessed):
-            lines.append('本次无通过统一评分的合约候选。观察名单方案与报价阶梯见期权附录。\n')
+            lines.append('本次无通过统一评分的合约候选。名单式 Sell Put 方案见下方，逐只明细与报价阶梯见期权附录。\n')
         return '\n'.join(lines)
 
     tickets = action_tickets(cards)

@@ -168,8 +168,9 @@ def test_fomc_blackout_blocks_new_shorts():
 def test_nfp_eve_is_blackout_week_before_is_caution():
     assert dw.options_event_status(today=date(2026, 9, 3))["status"] == "blackout"
     assert dw.options_event_status(today=date(2026, 9, 1))["status"] == "caution"
-    # October PCE coverage is not verified; no future-event inference is safe.
-    assert dw.options_event_status(today=date(2026, 10, 5))["status"] == "unknown"
+    # Outside the verified calendar window no future-event inference is safe.
+    assert dw.options_event_status(today=date(2026, 11, 20))["status"] == "caution"   # PCE 11/25
+    assert dw.options_event_status(today=date(2027, 2, 1))["status"] == "unknown"
 
 
 def test_config_watch_keeps_core_and_filters_quiet_names():

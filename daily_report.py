@@ -50,8 +50,16 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
     print(f"DAILY STOCK ANALYSIS — {date_str}")
     print(f"{'='*70}")
 
+    focus_mode = False
     if tickers is None:
-        tickers = sorted(set(UNIVERSE.keys()))
+        # Default pool: semiconductor + big-tech leaders (configs.FOCUS_UNIVERSE).
+        # UNIVERSE_MODE=full analyses everything again.
+        try:
+            from configs import active_tickers
+            tickers = active_tickers()
+            focus_mode = len(tickers) < len(UNIVERSE)
+        except ImportError:
+            tickers = sorted(set(UNIVERSE.keys()))
 
     # Run the full analysis
     results, macro_result = analysis_main.run_analysis(tickers, skip_news=skip_news, skip_alpha=False)
@@ -79,7 +87,8 @@ def run_daily(tickers=None, skip_news=False, send_mail=True, trade=False,
 
     # Run stock discovery (weekly — only on Mondays)
     discovery_result = None
-    if datetime.now().weekday() == 0:  # Monday
+    # Discovery proposes new (mostly smaller) names, so it is off in focus mode.
+    if datetime.now().weekday() == 0 and not focus_mode:  # Monday
         try:
             discovery_result = stock_discovery.discover_stocks(
                 UNIVERSE, scored_results=results, macro_result=macro_result

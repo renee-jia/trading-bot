@@ -90,10 +90,13 @@ def test_report_section_has_three_horizons_and_stance():
         "trend": trend,
         "trend_outlook": outlook,
     })
-    assert "## General — 美股趋势判断" in text
-    assert "未来一周" in text and "未来一个月" in text and "未来半年" in text
-    assert "仓位建议" in text
-    assert outlook["stance_label"] in text
+    # General is the cash plan only; trend, stance and horizons belong to the macro section.
+    assert "## General — 指数现金入场计划" in text and "未来一周" not in text
+    import macro_brief
+    block = macro_brief.outlook_block({"trend_outlook": outlook})
+    assert "未来一周" in block and "未来一个月" in block and "未来半年" in block
+    md, verdict = macro_brief.build({"score": 57, "trend": trend, "trend_outlook": outlook})
+    assert outlook["stance_label"] in md and "未来半年" in md
 
 
 def test_tight_dollar_and_rising_yields_is_risk_off_trim():

@@ -15,6 +15,7 @@ import yfinance as yf
 import cash_entry_plan
 import covered_call_advisor
 import daily_watch
+import leveraged_swing
 import macro_analyzer
 import macro_regime
 import options_research
@@ -32,12 +33,18 @@ from configs import ANALYZER_WEIGHTS
 def validate(markdown, html, rows):
     assert 'Section failed:' not in markdown
     assert not re.search(r'(?i)\b(?:nan|inf)\b', markdown)
-    assert markdown.index('## Executive Summary') < markdown.index('## General')
+    # Macro judgment opens the report; conclusions and desks follow it.
+    assert markdown.index('## 宏观研判') < markdown.index('## Executive Summary') < markdown.index('## General')
+    assert '| 宏观因素 |' in markdown and '今日操作' not in markdown
+    for gone in ('## Top Movers', '## 评分前列', '## AI / 半导体'):
+        assert gone not in markdown, gone
+    assert markdown.count('## 个股总表') == 1
+    assert '## 波段抄底' in markdown
     assert markdown.index('## General') < markdown.index('## 今日建议买入')
     assert '现金入场计划' in markdown and '候选分（未启用）' in markdown
     order = ['## 今日建议买入', '## Options Desk', '## 主题观察', '## 附录', '## Detailed Analysis']
     assert [markdown.index(k) for k in order] == sorted(markdown.index(k) for k in order)
-    assert markdown.count('### 现金入场计划') == 1
+    assert markdown.count('指数现金入场计划') == 1 and markdown.count('| ⭐⭐ 恐慌 |') == 1
     _, sections = split_sections(markdown)
     watch = next(body for title, body in sections if title.startswith('主题观察'))
     symbols = re.findall(r'^\| \*\*([^*]+)\*\* \|', watch, re.M)
@@ -70,7 +77,7 @@ def validate(markdown, html, rows):
     # The mailed body must stay under Gmail's clip limit and keep the decision desks.
     digest, omitted = email_digest(markdown)
     assert len(digest.encode('utf-8')) <= EMAIL_BUDGET, len(digest)
-    for key in ('Executive Summary', 'General', '主题观察', '今日建议买入', 'Options Desk'):
+    for key in ('宏观研判', 'Executive Summary', 'General', '主题观察', '今日建议买入', 'Options Desk'):
         assert key in digest and not any(key in o for o in omitted), key
     assert 'IV÷RV 是' not in digest and '候选分（未启用）' not in digest
     assert 'Detailed Analysis' in omitted
@@ -183,6 +190,7 @@ def run(replay=None):
     # its section but must not fetch chains during a replay.
     with patch.object(daily_watch,'held_tickers',return_value=set()), \
          patch.object(macro_regime,'build',return_value=regime), \
+         patch.object(leveraged_swing,'build',return_value={'error':'验证回放不取行情'}), \
          patch.object(report_generator,'_build_alpaca_performance',return_value=''), \
          patch.object(covered_call_advisor,'build_covered_call_ladders',return_value=''), \
          patch.object(sell_put_advisor,'analyze_put_ladder',

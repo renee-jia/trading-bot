@@ -11,10 +11,11 @@ def format_markdown(text):
     if len(parts) > 1:
         def priority(part):
             title = part.splitlines()[0]
-            groups = [('Executive Summary', 0), ('General', 1), ('Macro Desk', 2),
+            groups = [('宏观研判', -1), ('Executive Summary', 0), ('General', 1), ('Macro Desk', 2),
+                      ('个股总表', 3.2), ('波段抄底', 3.5), ('Top Movers', 5.68), ('AI /', 5.7), ('评分前列', 9),
                       ('主题观察', 5.5), ('附录 — 期权', 17.1),
                       ('附录 — 宏观', 17.2), ('附录 — 评分', 17.3),
-                      ('附录 — 方法', 19), ('Portfolio Performance', 10.5),
+                      ('附录 — 方法', 19), ('Portfolio Performance', 5.65),
                       ('AI Portfolio', 2.5), ('半导体加仓', 2.55),
                       ('光学互联', 2.57),
                       ('SaaS Watch', 2.6),
@@ -24,9 +25,9 @@ def format_markdown(text):
                       ('Covered Call Advisor', 6), ('Covered Call', 6.1),
                       ('Sell Put 雷达', 7), ('Cash-secured Put', 7.1),
                       ('Sell Put 方案', 8),
-                      ('Top Picks', 9), ('Suggested Portfolio', 10),
-                      ('评分后列', 11), ('Config', 12), ('Top Movers', 13),
-                      ('Daily Macro', 14), ('Alpaca', 15), ('AI /', 16),
+                      ('Top Picks', 9), ('Suggested Portfolio', 5.6),
+                      ('评分后列', 11), ('Config', 12),
+                      ('Daily Macro', 14), ('Alpaca', 15),
                       ('个股评分差异', 17), ('Scoring Methodology', 18),
                       ('Portfolio Strategy', 19), ('Detailed Analysis', 20),
                       ('Disclaimer', 21)]
@@ -191,7 +192,8 @@ def decision_markdown(markdown, budget=EMAIL_BUDGET, section_cap=EMAIL_SECTION_C
             omitted.append(title)
             continue
         html_size = measure(section)
-        if html_size > section_cap or title.startswith('主题观察'):
+        # The macro judgment is the report's first duty: never cut it down.
+        if (html_size > section_cap and not title.startswith('宏观研判')) or title.startswith('主题观察'):
             section = _compact_section(section)
             html_size = measure(section)
             compacted.append(title)

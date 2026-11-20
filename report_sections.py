@@ -62,11 +62,15 @@ def theme_entries(books):
     return list(entries.values())
 
 
-def theme_section(books):
+def theme_section(books, reference_only=False):
+    """Fixed theme views. With reference_only the daily price, score and call
+    are left to the stock table, so a name's numbers appear once in the report."""
     entries = theme_entries(books)
-    lines = ['## 主题观察 — 合并名单\n',
-             'AI 核心/观察、半导体、光学互联、SaaS、抄底布局和电力统一展示；同一股票只占一行。'
-             '星级、优先级、首批区间和开仓/加仓价为固定参考；评分与动作随本次行情更新。\n']
+    lines = ['## 主题观察 — 固定观点与价位\n' if reference_only else '## 主题观察 — 合并名单\n',
+             ('各主题名单的固定观点：星级、优先级、首批区间、开仓/加仓价。同一股票只占一行；'
+              '现价、评分和今日判断见「个股总表」，这里不重复。\n') if reference_only else
+             ('AI 核心/观察、半导体、光学互联、SaaS、抄底布局和电力统一展示；同一股票只占一行。'
+              '星级、优先级、首批区间和开仓/加仓价为固定参考；评分与动作随本次行情更新。\n')]
     summary = []
     for label, data in books:
         if (data or {}).get('error'):
@@ -79,19 +83,46 @@ def theme_section(books):
                         '、'.join(hits) or '无价格区间触发'])
     lines.append(table(['主题', '已评分/名单', '平均分', '价格区间触发（仍需入场确认）'], summary))
     lines.append('\n### 逐股观察\n')
-    rows = []
-    for entry in entries:
-        x = entry['item']
-        money = lambda v: '—' if v is None else f'${v:.2f}'
-        pct = lambda v: '—' if v is None else f'{v:+.1f}%'
-        score = f"{x['score']:.1f}" if x.get('score') is not None else '—'
-        action = x.get('add_verdict') or x.get('buy_label') or '—'
-        if not x.get('in_run'):
-            action = '未评分，等待行情确认'
-        rows.append([f"**{x.get('display') or entry['ticker']}**", ' / '.join(entry['tags']),
-                     money(x.get('price')), pct(x.get('change_1d')), score,
-                     pct(x.get('from_high')), action, '；'.join(entry['refs']) or '—'])
-    lines.append(table(['股票', '所属主题', '现价', '1日', '评分', '距高点', '今日判断', '固定观点 / 点位'], rows))
+    if not reference_only:
+        lines.append('按主题分组，每只股票只在第一个所属主题下出现一次；本期未纳入评分的名单只列代码。\n')
+    money = lambda v: '—' if v is None else f'${v:.2f}'
+    pct = lambda v: '—' if v is None else f'{v:+.1f}%'
+    for label, _data in books:
+        group = [e for e in entries if e['tags'][0].startswith(label)]
+        scored = [e for e in group if e['item'].get('in_run')]
+        if not group:
+            continue
+        lines.append(f"#### {label}（已评分 {len(scored)} / 名单 {len(group)}）\n")
+        rows, shown = [], set()
+        for entry in group:
+            x = entry['item']
+            name = x.get('display') or entry['ticker']
+            # A fixed price reference (zone, open/add level) stays visible even
+            # without a score; a bare unscored name does not earn a row.
+            pinned = any(k in ref for ref in entry['refs'] for k in ('首批', '开仓', '参考目标'))
+            if not x.get('in_run') and not pinned:
+                continue
+            if reference_only:
+                if not entry['refs']:
+                    continue
+                rows.append([f"**{name}**" + ('' if x.get('in_run') else '（未评分）'),
+                             ' / '.join(entry['tags']), '；'.join(entry['refs'])])
+            else:
+                score = f"{x['score']:.1f}" if x.get('score') is not None else '—'
+                action = x.get('add_verdict') or x.get('buy_label') or '—'
+                if not x.get('in_run'):
+                    action = '未评分，等待行情确认'
+                rows.append([f"**{name}**", ' / '.join(entry['tags']),
+                             money(x.get('price')), pct(x.get('change_1d')), score,
+                             pct(x.get('from_high')), action, '；'.join(entry['refs']) or '—'])
+            shown.add(name)
+        if rows:
+            lines.append(table(['股票', '所属主题', '固定观点 / 点位'] if reference_only else
+                               ['股票', '所属主题', '现价', '1日', '评分', '距高点', '今日判断', '固定观点 / 点位'], rows))
+        rest = [e['item'].get('display') or e['ticker'] for e in group
+                if (e['item'].get('display') or e['ticker']) not in shown and not e['item'].get('in_run')]
+        if rest:
+            lines.append(f"本期未纳入评分：{'、'.join(rest)}。\n")
     lines.append('\nAAOI / LYTE 按小市值或 ETF 控制仓位。参考估值与目标价为配置观点，'
                  '不代表当日机构更新；股票和 put 二选一，买点与财报见期权附录，逐股依据见 Detailed Analysis。\n')
     return '\n'.join(lines)

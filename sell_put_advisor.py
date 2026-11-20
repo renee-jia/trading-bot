@@ -56,15 +56,24 @@ HIGH_IMPACT_MACRO = (
     (date(2026, 10, 2), "NFP"),
     (date(2026, 10, 14), "CPI"),
     (date(2026, 10, 28), "FOMC"),
+    (date(2026, 10, 29), "PCE"),
     (date(2026, 11, 6), "NFP"),
     (date(2026, 11, 10), "CPI"),
+    (date(2026, 11, 25), "PCE"),
     (date(2026, 12, 4), "NFP"),
-    (date(2026, 12, 10), "CPI"),
     (date(2026, 12, 9), "FOMC"),
+    (date(2026, 12, 10), "CPI"),
+    (date(2027, 1, 8), "NFP"),
+    (date(2027, 1, 13), "CPI"),
 )
-# Fed/BLS/BEA checked 2026-09-08. PCE coverage verified only through September.
+# Re-checked 2026-11-19: BEA lists Oct PCE for 11/25 (Sep PCE was 10/29); BLS
+# lists Nov jobs 12/4, Dec jobs 1/8 and Dec CPI 1/13. Nov CPI 12/10 and FOMC
+# 12/8-9 match the BLS/Fed 2026 schedules but were confirmed from secondary
+# pages only. The November PCE date (late December) and the January FOMC are
+# NOT verified, so coverage stops after the 12/9-10 cluster. Outside this
+# window the Options Desk pauses new candidates and says so in the report.
 MACRO_COVERAGE_START = date(2026, 9, 1)
-MACRO_COVERAGE_END = date(2026, 9, 30)
+MACRO_COVERAGE_END = date(2026, 12, 12)
 FOMC_BUFFER_DAYS = 3
 
 

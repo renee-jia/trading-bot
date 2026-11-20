@@ -6,10 +6,41 @@ shared with email; external HTML is escaped and unsafe links are rejected.
 
 ## Reading order
 
-The main report contains the rating counts, General market outlook and cash
-plan, today's stock actions, the unified Options Desk, a merged theme watch
-book, and suggested portfolio allocation. The paper-account performance and
-weekly discovery sections appear when available.
+Every report opens with the macro judgment and only then moves to stocks:
+
+1. **宏观研判** (`macro_brief.py`) — headline stance, an eight-factor table
+   (index trend, breadth, rates/curve, real yield/credit, volatility,
+   dollar/yen, oil/gold, event window) with a reading, a 🟢/🟡/🔴/⚪ signal, a
+   judgment and a sizing implication per factor, then the historical analog,
+   entry-timing view, scenarios, reduce triggers and catalysts. It describes
+   the situation only; actions are listed once, in the Executive Summary.
+   Raw tape/rates tables live in the macro appendix. The unsearched daily
+   assessment narrative appears here only when the searched Regime Desk
+   synthesis is unavailable. Thresholds are deterministic and live in
+   `macro_brief.py`; a missing reading is ⚪ and casts no vote.
+2. **Executive Summary** — the single action list: macro one-liner, stock and
+   options pace, any stance/cash-ladder divergence, rating counts, today's
+   buys, names not to chase, the 3x ETF swing call, options candidates, theme
+   price triggers, cash-pool tier, top momentum weights, reduce triggers.
+3. **General** — the index cash entry plan only (ladder, tier, next trigger).
+4. **今日建议买入** — 抄底 / 加仓 / 候补 tables for names that pass today.
+5. **个股总表** — every scored name once: price, 1d/1m/3m, distance from high,
+   score, rating and today's call, plus a sub-sector strength table. It
+   replaces Top Movers, 板块分析 and 评分前列与后列.
+6. **波段抄底 — TQQQ / SOXL** (`leveraged_swing.py`, see LEVERAGED_SWING.md).
+7. **Options Desk** — stance, unified decisions, candidate contracts, and one
+   watch-list sell-put table (per-name detail stays in the appendix).
+8. **主题观察** — fixed views and price levels only (no price/score columns),
+   then the suggested allocation (weights only) and paper-account performance.
+
+One-home rule: a number or a call appears in exactly one main-body section;
+other sections point to it. Add a column to the home section before adding a
+new section.
+
+The daily run analyses the focus pool `configs.FOCUS_UNIVERSE` (semiconductor
+and big-tech leaders). `UNIVERSE_MODE=full` restores the whole universe and
+`FOCUS_TICKERS` overrides the list. Theme-book names outside today's scored
+pool are listed by ticker only, unless they carry a fixed price reference.
 
 The watch book combines AI core/watch, chips, optics, SaaS, diversified dips,
 and power into one row per ticker. Multiple memberships remain visible. Fixed

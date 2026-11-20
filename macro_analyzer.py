@@ -441,19 +441,19 @@ Also factor in your knowledge of:
 - **Economic data**: Recent GDP, jobs, inflation, PMI readings
 - **Liquidity conditions**: Fed balance sheet, reverse repo, credit spreads
 - **Market sentiment**: AAII survey, put/call ratio, fund flows, Fear & Greed index
-- **Seasonal patterns**: Time of year, earnings season, September seasonality
+- **Seasonal patterns**: Time of year, earnings season
 
 Respond with ONLY a valid JSON object (no markdown, no code blocks):
 
 {{
   "score": <float 0-100, overall macro favorability. 75+ = strong buy day, 60-74 = buy day, 45-59 = neutral, 30-44 = cautious, <30 = risk off>,
   "confidence": <float 0.0-1.0>,
-  "summary": <string, 2-3 sentence executive summary of today's macro environment, English>,
-  "bull_case": <string, 1-2 sentences on what's working for bulls, English>,
-  "bear_case": <string, 1-2 sentences on what's worrying bears, English>,
-  "key_risks": <list of strings, top 3-5 macro risks right now, English>,
-  "key_catalysts": <list of strings, top 3-5 positive catalysts, English>,
-  "action_guidance": <string, 1-2 sentences of specific guidance: should investors be adding, holding, or trimming today?, English>,
+  "summary": <string, 2-3 sentence executive summary of today's macro environment, 简体中文>,
+  "bull_case": <string, 1-2 sentences on what's working for bulls, 简体中文>,
+  "bear_case": <string, 1-2 sentences on what's worrying bears, 简体中文>,
+  "key_risks": <list of strings, top 3-5 macro risks right now, 简体中文>,
+  "key_catalysts": <list of strings, top 3-5 positive catalysts, 简体中文>,
+  "action_guidance": <string, 1-2 sentences of specific guidance: should investors be adding, holding, or trimming today?, 简体中文>,
   "cited_news": <list of strings, 3-5 most impactful news headlines from the list above that drive your assessment>,
   "current_trend": <string, Chinese, 3-5 sentences: is this a crash, a pullback, a rotation, or an uptrend? cite index vs internals (semis/energy/yields)>,
   "outlook_1w": {{"direction": "up"|"down"|"range", "view": "<Chinese, 2-3 sentences, name the events that matter this week>"}},
@@ -476,38 +476,43 @@ Guidelines:
   - scale_in = buy weakness in slices (typically 20-30% of planned capital now). Default when it is a dip inside an uptrend or an internal rotation, NOT a crash.
   - aggressive_buy = only if VIX is panicked (roughly 28+) AND the index is already in a double-digit drawdown. Never for a one-day chip selloff while SPY is near highs.
 - Distinguish index trend from internals. Equal-weight/energy up + semis down is rotation, not a reason to dump the whole book or to all-in semiconductors.
-- September is historically the weakest month; do not treat that as a crash signal by itself."""
+- Seasonality alone is never a crash signal."""
 
-    _t0 = time.time()
-    response = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=2500,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    _latency = round(time.time() - _t0, 3)
-    _usage = getattr(response, "usage", None)
-    _meta = {
-        "kind": "macro", "model": "claude-haiku-4-5", "latency_s": _latency,
-        "in_tokens": getattr(_usage, "input_tokens", None),
-        "out_tokens": getattr(_usage, "output_tokens", None),
-        "stop_reason": getattr(response, "stop_reason", None),
-        "quant_signals": quant_signals, "mechanical_phase": classified.get("phase"),
-        "mechanical_structure": classified.get("structure"),
-    }
+    # Free-form JSON is occasionally malformed; retry once before falling back.
+    for _attempt in (1, 2):
+        _t0 = time.time()
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=2500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        _latency = round(time.time() - _t0, 3)
+        _usage = getattr(response, "usage", None)
+        _meta = {
+            "kind": "macro", "model": "claude-haiku-4-5", "latency_s": _latency,
+            "in_tokens": getattr(_usage, "input_tokens", None),
+            "out_tokens": getattr(_usage, "output_tokens", None),
+            "stop_reason": getattr(response, "stop_reason", None),
+            "quant_signals": quant_signals, "mechanical_phase": classified.get("phase"),
+            "mechanical_structure": classified.get("structure"),
+        }
 
-    text = response.content[0].text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
 
-    try:
-        result = json.loads(text)
-        result["score"] = max(0, min(100, float(result["score"])))
-        result["confidence"] = max(0, min(1, float(result["confidence"])))
-    except Exception as e:
-        _llm_log({**_meta, "status": "parse_error", "error": str(e)[:200],
-                  "raw_head": text[:120]})
-        raise
+        try:
+            result = json.loads(text)
+            result["score"] = max(0, min(100, float(result["score"])))
+            result["confidence"] = max(0, min(1, float(result["confidence"])))
+        except Exception as e:
+            _llm_log({**_meta, "status": "parse_error", "attempt": _attempt, "error": str(e)[:200],
+                      "raw_head": text[:120]})
+            if _attempt == 2:
+                raise
+            continue
+        break
     # Full model output is kept verbatim for the reasoning analysis.
     _llm_log({**_meta, "status": "ok", "result": result})
     return result
@@ -931,9 +936,12 @@ def fallback_trend_outlook(trend, macro_score, market_data=None):
         m = _horizon_dict("range", "未来一个月看调整是否在长期均线处停下。")
         h = _horizon_dict("up", "若这是牛市中的调整，半年维度仍偏向修复，但仓位要留余地。")
     elif phase == "pullback":
-        current = f"指数距高点 {dd_txt}，是上升趋势里的回撤。"
+        if trend.get("above_sma200") is False:
+            current = f"指数距高点 {dd_txt}，并已跌破 200 日均线：回撤在加深，但还不到调整（−10%）区间。"
+        else:
+            current = f"指数距高点 {dd_txt}，是上升趋势里的回撤。"
         w = _horizon_dict("range", "近一周不要把回撤当成崩盘，也不要因为一日反弹就追高。")
-        m = _horizon_dict("range", "未来一个月仍是边走边看，尤其是 9 月季节性偏弱。")
+        m = _horizon_dict("range", "未来一个月仍是边走边看，等数据与政策窗口明朗。")
         h = _horizon_dict("up", "半年基准仍是偏多，前提是不要在拥挤板块上加倍。")
     elif phase == "uptrend":
         current = f"指数仍在上升趋势（距高点 {dd_txt}，价格在长期均线上方）。"

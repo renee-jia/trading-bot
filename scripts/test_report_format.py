@@ -200,7 +200,7 @@ def test_compacted_watch_email_keeps_summary_and_omits_large_stock_table():
 
 def test_unified_contract_is_rendered_once_with_payoff_and_checks():
     from unittest.mock import patch
-    import ai_sell_put_plan, covered_call_advisor, macro_regime, sell_put_advisor
+    import ai_sell_put_plan, covered_call_advisor, leveraged_swing, macro_regime, sell_put_advisor
     from core import strategy
     from options_decision import render_tickets
     ticket = {'strategy':'cash_secured_put', 'score':72, 'expiry':'2026-11-20',
@@ -223,6 +223,7 @@ def test_unified_contract_is_rendered_once_with_payoff_and_checks():
          patch.object(report_generator, '_build_alpaca_performance', return_value=''), \
          patch.object(macro_regime, 'build', return_value={'data':{}, 'synthesis':{'regime_label':'测试'}}), \
          patch.object(macro_regime, 'build_section', return_value='## Regime\n\n依据'), \
+         patch.object(leveraged_swing, 'build', return_value={'error': 'offline'}), \
          patch.object(ai_sell_put_plan, 'build_section', return_value='## Put 观察\n\n方案'), \
          patch.object(covered_call_advisor, 'build_covered_call_ladders', return_value=''), \
          patch.object(sell_put_advisor, 'build_sell_put_radar', return_value=''):

@@ -490,19 +490,28 @@ def synthesize(data, api_key):
                                  default_headers={"anthropic-workspace-id": _ws} if _ws else None)
     today = datetime.now().strftime("%Y-%m-%d")
     user = f"今天是 {today}。\n\n## 量化仪表盘\n{_data_block(data)}\n\n先搜索最近 3 天的市场新闻，然后按系统提示的 JSON 格式输出。"
-    resp = client.messages.create(
-        model=SYNTH_MODEL,
-        max_tokens=6000,
-        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": SYNTH_MAX_SEARCHES}],
-        messages=[{"role": "user", "content": user}],
-    )
-    if resp.stop_reason == "refusal":
-        return None
-    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-    out = _extract_json(text)
+    # The reply is free-form JSON and occasionally malformed (an unescaped
+    # quote inside Chinese text); one retry is cheaper than a fallback report.
+    for attempt in (1, 2):
+        resp = client.messages.create(
+            model=SYNTH_MODEL,
+            max_tokens=6000,
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": SYNTH_MAX_SEARCHES}],
+            messages=[{"role": "user", "content": user}],
+        )
+        if resp.stop_reason == "refusal":
+            return None
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        try:
+            out = _extract_json(text)
+            break
+        except ValueError as e:
+            print(f"  Regime Desk synthesis returned malformed JSON (attempt {attempt}): {e}")
+            if attempt == 2:
+                raise
     if not isinstance(out, dict) or "regime_label" not in out:
         return None
     sc = out.get("scenarios") or {}
@@ -614,7 +623,8 @@ def build_section(result):
                  f"未来 6 月最大回撤中位 {a['worst_6m_dd_median']:.1f}%，25 分位 {a['worst_6m_dd_q25']:.1f}%。\n")
 
     # Drawdown windows + scenarios
-    L.append("### 回撤窗口与情景\n")
+    if syn.get("drawdown_windows") or syn.get("scenarios"):
+        L.append("### 回撤窗口与情景\n")
     for w in syn.get("drawdown_windows") or []:
         L.append(f"- **{w.get('window', '')}** — {w.get('trigger', '')}（概率：{w.get('likelihood', '—')}）")
     sc = syn.get("scenarios")
